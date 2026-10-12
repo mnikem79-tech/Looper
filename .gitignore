@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+exports/
+looper_config.json
+test_export.wav
+*.zip
