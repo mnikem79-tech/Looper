@@ -655,6 +655,39 @@ def test_drum_events_adapt():
     print("OK  драм-таблица (стили/размер/такты)")
 
 
+def test_drum_meter_variants():
+    """У каждого размера — СВОЙ вариант паттерна (без сжатия): слоты точные."""
+    from drums import build_events
+
+    def hits(t, instr):
+        return [i for i, s in enumerate(t) if any(n == instr for n, _v in s)]
+
+    # Поп 4/4: бочка на 1 и «и» 3-й (слоты 0, 10), малый на 2 и 4 (4, 12)
+    t4 = build_events("Поп", 4, 1, 1)
+    assert set(hits(t4, "kick")) == {0, 10}
+    assert set(hits(t4, "snare")) == {4, 12}
+    # Поп 3/4: бочка на 1 (слот 0), малый на 2 и 3 (слоты 4, 8) — своя музыка!
+    t3 = build_events("Поп", 3, 1, 1)
+    assert set(hits(t3, "kick")) == {0}
+    assert set(hits(t3, "snare")) == {4, 8}
+    # Рок 5/4: бочка 1, 3, «и» 4 (слоты 0, 8, 12), малый 2 и 5 (4, 16)
+    t5 = build_events("Рок", 5, 1, 1)
+    assert set(hits(t5, "kick")) == {0, 8, 12}
+    assert set(hits(t5, "snare")) == {4, 16}
+    # Хэт: ровные 8-е в Поп (каждый 2-й слот) и 16-е в Электро (каждый слот)
+    hats_p = hits(build_events("Поп", 4, 1, 1), "hat")
+    assert hats_p == list(range(0, 16, 2))
+    hats_e = hits(build_events("Электро", 4, 1, 1), "hat")
+    assert hats_e == list(range(16))
+    # ВСЕ позиции — целые слоты 1/16 (нет полуслотов → нет «хаоса»)
+    for style in ("Поп", "Рок", "Фанк", "Диско"):
+        for meter in (2, 3, 4, 5, 6):
+            t = build_events(style, meter, 1, 1)
+            assert all(isinstance(i, int) for i in range(len(t)))
+            assert sum(len(s) for s in t) > 0
+    print("OK  варианты паттерна по размерам (точные слоты)")
+
+
 def test_drum_plays_with_transport():
     """Драмы звучат только с транспортом; отбивка тактов = длина такта."""
     e = make_engine({"drum_on": True, "drum_gain": 1.0, "monitor_gain": 0.0,
@@ -821,6 +854,7 @@ if __name__ == "__main__":
     test_metronome_only_when_running()
     test_metronome_join_midrun()
     test_drum_events_adapt()
+    test_drum_meter_variants()
     test_drum_plays_with_transport()
     test_drum_follows_tempo()
     test_drum_not_recorded()
