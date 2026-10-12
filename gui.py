@@ -19,7 +19,7 @@ from tkinter import messagebox, ttk
 from audio_engine import SlotState
 from drums import STYLE_NAMES
 
-APP_VERSION = "r8.2 (2026-10-12)"
+APP_VERSION = "r8.3 (2026-10-12)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),
@@ -66,15 +66,12 @@ class LoopRow:
         self.frame.pack(fill="x", pady=2)
 
         self.num_btn = tk.Button(
-            self.frame, text=f"Луп {index + 1}", width=7,
+            self.frame, text=f"Луп {index + 1}", width=10,
             bg=PANEL, fg=FG, activebackground="#3a3a3c", activeforeground=FG,
-            font=("Segoe UI", 9, "bold"),
-            command=lambda n=index: app.select_slot(n),
+            font=("Segoe UI", 11, "bold"),
+            command=lambda n=index: app.click_slot(n),
         )
-        self.num_btn.pack(side="left")
-        self.state_lbl = tk.Label(self.frame, text="—", width=16, anchor="w",
-                                  bg=BG, fg=DIM, font=("Segoe UI", 8))
-        self.state_lbl.pack(side="left")
+        self.num_btn.pack(side="left", fill="y")
 
         holder = tk.Frame(self.frame, bg=BG)
         holder.pack(side="left", fill="x", expand=True)
@@ -92,20 +89,19 @@ class LoopRow:
         self._playhead = None
 
     def update_row(self, snap_info: dict, selected: bool, params_sig: str) -> None:
-        state = snap_info["state"]
-        text = f"{state.value} {snap_info['length']:.1f}с"
-        if snap_info.get("armed_here") or snap_info.get("waiting"):
-            text = "● Ждём звук — запишется с порога"
-        self.state_lbl.config(text=text, fg=STATE_COLORS.get(state, FG))
         border = ACCENT if selected else PANEL
         self.canvas.configure(highlightbackground=border)
 
-        # Кнопка лупа: серый — не выбран; зелёный — выбран;
+        # Кнопка лупа: серый — не выбран; зелёный — выбран; жёлтый — приглушён;
         # красный — идёт запись или ожидание порога для этого лупа.
+        muted = snap_info.get("muted", False)
         if selected and (snap_info.get("recording") or snap_info.get("armed_here")
                          or snap_info.get("waiting")):
             self.num_btn.configure(bg=REC, fg="white",
                                    activebackground="#ff6961", activeforeground="white")
+        elif muted:
+            self.num_btn.configure(bg=WARN, fg="#111",
+                                   activebackground="#ffe14d", activeforeground="#111")
         elif selected:
             self.num_btn.configure(bg=PLAY, fg="#111",
                                    activebackground="#5ee07f", activeforeground="#111")
@@ -448,6 +444,10 @@ class App(tk.Tk):
 
     def select_slot(self, n: int) -> None:
         self.engine.post("select_slot", n)
+
+    def click_slot(self, n: int) -> None:
+        """Клик по кнопке лупа: выбор; повторный клик по выбранному — вкл/выкл mute."""
+        self.engine.post("slot_click", n)
 
     # ==================================================================
     # Вкладка «Настройки»

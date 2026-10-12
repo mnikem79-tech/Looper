@@ -80,6 +80,7 @@ class Slot:
         self.undo_flags = np.zeros(max(1, n_blocks), dtype=bool)
         # Зелёный/серый по блокам: True — блок с порогом (или записанный вручную)
         self.block_flags = np.zeros(max(1, n_blocks), dtype=bool)
+        self.muted = False      # канал приглушён (кнопка лупа; запись не трогается)
         # Огибающая и «хиты» для окраски волноформы
         self.wave_gen = 0
         self._wave_cache = None
@@ -494,6 +495,7 @@ class AudioEngine:
                     "has_undo": s.has_undo,
                     "recording": s.rec_active,
                     "waiting": bool(s.rec_active and s.wait_hit),
+                    "muted": s.muted,
                     "blocks": [bool(v) for v in s.block_flags],
                 }
             )
@@ -752,7 +754,7 @@ class AudioEngine:
     # ------------------------------------------------------------------
     def _render_at(self, s: Slot, p0: int, frames: int, mix: np.ndarray) -> None:
         cycle = self._cycle_len
-        if cycle <= 0:
+        if cycle <= 0 or s.muted:
             return
         i = 0
         pos = p0
@@ -837,7 +839,7 @@ class AudioEngine:
                 else:
                     # Порога нет: копим вход, СТАРЫЙ БЛОК ИГРАЕТ.
                     s.block_segs.append(part.copy())
-                    if s.length > 0:
+                    if s.length > 0 and not s.muted:
                         mix[off + i:off + i + take] += s.data[p:p + take]
             i += take
             p += take
@@ -1128,6 +1130,22 @@ class AudioEngine:
             self._clear(self.slots[self.current_slot])
         elif action == "select_slot" and arg is not None:
             self._switch_slot(int(arg))
+        elif action == "toggle_mute":
+            idx = self.current_slot if arg is None else int(arg) % self.n_slots
+            self.slots[idx].muted = not self.slots[idx].muted
+        elif action == "slot_click" and arg is not None:
+            # Клик по кнопке лупа: выбор; повторный клик по выбранному — mute.
+            n = int(arg) % self.n_slots
+            if n == self.current_slot:
+                self.slots[n].muted = not self.slots[n].muted
+            else:
+                self._switch_slot(n)
+        elif action.startswith("slot_"):
+            # MIDI/клавиши: «Выбрать луп N» (1..4) — только выбор.
+            try:
+                self._switch_slot(int(action[5:]) - 1)
+            except ValueError:
+                pass
         elif action == "next_slot":
             self._switch_slot((self.current_slot + 1) % self.n_slots)
         elif action == "prev_slot":

@@ -794,6 +794,52 @@ def test_drum_styles_differ():
     print("OK  стили различаются")
 
 
+def test_mute_slot():
+    """Mute глушит воспроизведение слота, но запись не трогает."""
+    e = make_engine({"monitor_gain": 0.0})
+    e.post("toggle_rec")
+    feed(e, 0.5, CYCLE)
+    e.post("toggle_rec")
+    flush(e)
+    y = process(e, block_signal(0.0))
+    assert float(np.max(np.abs(y))) > 0.2                # луп слышен
+    e.post("toggle_mute", 0)
+    flush(e)
+    y = process(e, block_signal(0.0))
+    assert float(np.max(np.abs(y))) == 0.0               # приглушён
+    s = e.slots[0]
+    assert s.muted
+    assert s.length == CYCLE                             # запись цела
+    assert float(np.max(np.abs(s.data[:CYCLE]))) > 0.4
+    e.post("toggle_mute", 0)
+    flush(e)
+    y = process(e, block_signal(0.0))
+    assert float(np.max(np.abs(y))) > 0.2                # снова слышен
+    print("OK  mute слота (запись цела)")
+
+
+def test_slot_click():
+    """Клик по кнопке лупа: выбор; повторный клик по выбранному — вкл/выкл mute."""
+    e = make_engine()
+    e.post("slot_click", 0)          # слот 0 и так выбран → mute
+    flush(e)
+    assert e.slots[0].muted and e.current_slot == 0
+    e.post("slot_click", 1)          # другой слот → выбор, mute не включается
+    flush(e)
+    assert e.current_slot == 1 and not e.slots[1].muted
+    assert e.slots[0].muted          # mute соседа сохранился
+    e.post("slot_click", 1)          # тот же → mute
+    flush(e)
+    assert e.slots[1].muted
+    e.post("slot_click", 1)          # тот же → снова активен
+    flush(e)
+    assert not e.slots[1].muted
+    e.post("slot_3")                 # MIDI «Выбрать луп 3» — только выбор
+    flush(e)
+    assert e.current_slot == 2 and not e.slots[2].muted
+    print("OK  клик по слоту: выбор / mute")
+
+
 def test_get_wave():
     e = make_engine()
     e.post("toggle_rec")
@@ -900,6 +946,8 @@ if __name__ == "__main__":
     test_drum_not_recorded()
     test_drum_preview()
     test_drum_styles_differ()
+    test_mute_slot()
+    test_slot_click()
     test_get_wave()
     test_ring_buffer()
     test_ring_read_latency_clamp()
