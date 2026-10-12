@@ -183,6 +183,7 @@ class AudioEngine:
         self._mono_in = np.zeros(bs, dtype=np.float32)
         self._mix = np.zeros(bs, dtype=np.float32)
         self._out = np.zeros(bs, dtype=np.float32)
+        self._drum_bus = np.zeros(bs, dtype=np.float32)
         self._split_in = np.zeros(bs, dtype=np.float32)
 
         # Кольцевой буфер для режима split
@@ -711,9 +712,15 @@ class AudioEngine:
                 self._drum_tail = np.zeros(0, dtype=np.float32)  # убрать хвост
             self._drum_on_prev = self.drum_on
         if self.drum_on and running:
-            self._render_drums_span(outm, p0, frames)
+            bus = self._drum_bus[:frames]
+            bus[:] = 0.0
+            self._render_drums_span(bus, p0, frames)
+            outm += np.tanh(bus)               # мягкий лимитер без клиппинга
         elif self._preview_active and not running:
-            self._render_drums_span(outm, self._preview_pos, frames)
+            bus = self._drum_bus[:frames]
+            bus[:] = 0.0
+            self._render_drums_span(bus, self._preview_pos, frames)
+            outm += np.tanh(bus)
             self._preview_pos += frames
             if self._preview_pos >= self._cycle_len:
                 self._preview_active = False
@@ -979,8 +986,14 @@ class AudioEngine:
         take = min(n, len(out) - off)
         out[off:off + take] += click[:take] * self.metro_gain
         if take < n:
-            tail = click[take:] * self.metro_gain
-            self._click_tail = np.concatenate((self._click_tail, tail)).astype(np.float32)
+            tail = (click[take:] * self.metro_gain).astype(np.float32)
+            need = len(tail)
+            if len(self._click_tail) < need:
+                self._click_tail = np.concatenate((
+                    self._click_tail,
+                    np.zeros(need - len(self._click_tail), dtype=np.float32),
+                ))
+            self._click_tail[:need] += tail
 
     def _get_click(self, accent: bool) -> np.ndarray:
         key = (self.metro_sound, accent, self.sample_rate)
@@ -1081,8 +1094,16 @@ class AudioEngine:
         take = min(n, len(out) - off)
         out[off:off + take] += hit[:take] * gain
         if take < n:
-            tail = hit[take:] * gain
-            self._drum_tail = np.concatenate((self._drum_tail, tail)).astype(np.float32)
+            # Хвост НАКАПЛИВАЕТСЯ (суммируется), а не дописывается в конец:
+            # одновременные инструменты должны звучать ВМЕСТЕ, а не по очереди.
+            tail = (hit[take:] * gain).astype(np.float32)
+            need = len(tail)
+            if len(self._drum_tail) < need:
+                self._drum_tail = np.concatenate((
+                    self._drum_tail,
+                    np.zeros(need - len(self._drum_tail), dtype=np.float32),
+                ))
+            self._drum_tail[:need] += tail
 
     def _get_hit(self, name: str) -> np.ndarray:
         hit = self._drum_hits.get((name, self.sample_rate))

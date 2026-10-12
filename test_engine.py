@@ -688,6 +688,43 @@ def test_drum_meter_variants():
     print("OK  варианты паттерна по размерам (точные слоты)")
 
 
+def test_drum_tails_sum():
+    """Одновременные удары: хвосты СУММИРУЮТСЯ, а не проигрываются по очереди."""
+    e = make_engine()
+    a = np.ones(1000, dtype=np.float32)          # «бочка» — длинный хвост
+    b = np.ones(1000, dtype=np.float32) * 0.5    # «хэт» — с ней же, но позже в блоке
+    out = np.zeros(BLOCK, dtype=np.float32)
+    e._mix_drum(out, 0, a, 1.0)
+    e._mix_drum(out, 100, b, 1.0)
+    # оба хвоста начинаются со следующего блока и должны лежать ДРУГ НА ДРУГЕ
+    assert len(e._drum_tail) == 844              # max(1000-256, 1000-156)
+    assert abs(float(e._drum_tail[0]) - 1.5) < 1e-6     # 1.0 + 0.5 в нуле
+    assert abs(float(e._drum_tail[743]) - 1.5) < 1e-6
+    assert abs(float(e._drum_tail[744]) - 0.5) < 1e-6   # хвост «а» кончился
+    print("OK  хвосты одновременных ударов суммируются")
+
+
+def test_drum_hits_clean():
+    """Удары без щелчков: начинаются с нуля, нормированы, без клиппинга."""
+    from drums import make_hit
+    for kind in ("kick", "snare", "fsnare", "hat", "openhat", "crash"):
+        h = make_hit(kind, SR)
+        assert abs(float(h[0])) < 1e-3, kind              # без щелчка в начале
+        assert abs(float(h[-1])) < 1e-2, kind             # и в конце
+        assert float(np.max(np.abs(h))) <= 1.0 + 1e-6, kind
+    print("OK  звуки ударов чистые (без щелчков)")
+
+
+def test_drum_no_clip_when_overlapping():
+    """Сумма одновременных ударов не клиппится (мягкий лимитер)."""
+    e = make_engine({"drum_on": True, "drum_gain": 1.5, "monitor_gain": 0.0,
+                     "drum_style": "Диско", "bars_per_block": 2, "num_blocks": 2})
+    e.post("toggle_play")
+    y = np.concatenate([process(e, block_signal(0.0)) for _ in range(400)])
+    assert float(np.max(np.abs(y))) <= 1.0 + 1e-6
+    print("OK  без клиппинга при наложении")
+
+
 def test_drum_plays_with_transport():
     """Драмы звучат только с транспортом; отбивка тактов = длина такта."""
     e = make_engine({"drum_on": True, "drum_gain": 1.0, "monitor_gain": 0.0,
@@ -855,6 +892,9 @@ if __name__ == "__main__":
     test_metronome_join_midrun()
     test_drum_events_adapt()
     test_drum_meter_variants()
+    test_drum_tails_sum()
+    test_drum_hits_clean()
+    test_drum_no_clip_when_overlapping()
     test_drum_plays_with_transport()
     test_drum_follows_tempo()
     test_drum_not_recorded()

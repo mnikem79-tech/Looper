@@ -19,7 +19,7 @@ from tkinter import messagebox, ttk
 from audio_engine import SlotState
 from drums import STYLE_NAMES
 
-APP_VERSION = "r8.1 (2026-10-12)"
+APP_VERSION = "r8.2 (2026-10-12)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),

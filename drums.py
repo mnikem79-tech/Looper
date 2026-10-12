@@ -96,6 +96,16 @@ STYLES = {
 
 STYLE_NAMES = tuple(STYLES.keys())
 
+# Уровни инструментов (чтобы сумма одновременных ударов не клиппилась)
+LEVELS = {
+    "kick": 1.0,
+    "snare": 0.75,
+    "fsnare": 0.7,
+    "hat": 0.5,
+    "openhat": 0.45,
+    "crash": 0.5,
+}
+
 
 def _generic_pattern(style: dict, bpb: int) -> dict:
     """Резерв для размеров вне 2–6: правила ролей, БЕЗ сжатия позиций."""
@@ -125,7 +135,8 @@ def build_events(style: str, beats_per_bar: int, bars_per_block: int,
     def put(bar: int, slot_in_bar: int, instr: str, vel: float) -> None:
         if 0 <= slot_in_bar < slots_per_bar:
             d = raw[bar * slots_per_bar + slot_in_bar]
-            d[instr] = max(d.get(instr, 0.0), float(vel))
+            d[instr] = max(d.get(instr, 0.0),
+                           float(vel) * LEVELS.get(instr, 1.0))
 
     for bar in range(total_bars):
         for pos in pat["kick"]:
@@ -187,5 +198,10 @@ def make_hit(kind: str, sr: int) -> np.ndarray:
         noise = rng.standard_normal(n).astype(np.float32)
         hp = np.diff(np.concatenate(([0.0], noise)))
         y = hp * np.exp(-t * 4.5)
+    # Сглаживание краёв (fade 2 мс) — БЕЗ щелчков/треска на стыках
+    n_fade = min(max(1, len(y) // 4), max(4, int(sr * 0.002)))
+    fade_in = np.linspace(0.0, 1.0, n_fade, dtype=np.float32)
+    y[:n_fade] *= fade_in
+    y[-n_fade:] *= fade_in[::-1]
     peak = float(np.max(np.abs(y))) or 1.0
     return (y / peak).astype(np.float32)
