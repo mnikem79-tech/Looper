@@ -19,7 +19,7 @@ from tkinter import messagebox, ttk
 from audio_engine import SlotState
 from drums import STYLE_NAMES
 
-APP_VERSION = "r8.5 (2026-10-12)"
+APP_VERSION = "r8.5.1 (2026-10-12)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),
@@ -237,6 +237,11 @@ class App(tk.Tk):
         kw.setdefault("bg", BG)
         kw.setdefault("fg", FG)
         kw.setdefault("font", FONT)
+        # tk.Label не понимает кортежные padx/pady (это синтаксис pack) —
+        # приводим к числу, чтобы окно никогда не падало на этом
+        for key in ("padx", "pady"):
+            if key in kw and isinstance(kw[key], (tuple, list)):
+                kw[key] = kw[key][0]
         return tk.Label(parent, text=text, **kw)
 
     def _hint(self, parent, text):
@@ -357,7 +362,7 @@ class App(tk.Tk):
         self.bpm_var.trace_add("write", lambda *_: self._apply_loops_params())
         self._label(r1, "BPM", bg=PANEL, width=4, anchor="w").pack(side="left")
 
-        self._label(r1, "Размер:", bg=PANEL, padx=(18, 0)).pack(side="left")
+        self._label(r1, "Размер:", bg=PANEL).pack(side="left", padx=(18, 0))
         self.meter_var = tk.StringVar(value=str(self.cfg.get("beats_per_bar", 4)))
         ttk.Combobox(r1, textvariable=self.meter_var, width=5, state="readonly",
                      values=("2", "3", "4", "5", "6")).pack(side="left", padx=4)
@@ -373,7 +378,7 @@ class App(tk.Tk):
                    command=self._apply_loops_params).pack(side="left", padx=4)
         self.bars_var.trace_add("write", lambda *_: self._apply_loops_params())
 
-        self._label(r2, "Блоков:", bg=PANEL, padx=(18, 0)).pack(side="left")
+        self._label(r2, "Блоков:", bg=PANEL).pack(side="left", padx=(18, 0))
         self.blocks_var = tk.StringVar(value=str(self.cfg.get("num_blocks", 2)))
         tk.Spinbox(r2, from_=1, to=64, width=5, textvariable=self.blocks_var, bg="#111",
                    fg=FG, buttonbackground=PANEL, font=FONT,
