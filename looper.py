@@ -37,9 +37,15 @@ def main() -> int:
     engine = AudioEngine(cfg)
 
     # MIDI-колбэки кладут события в очередь UI (см. App._poll).
+    # Ноты идут напрямую в сэмплер — чтобы играть без задержки.
     midi = MidiHandler(
         on_message=lambda key: app.ui_q.put(("midi", key)),
         on_learn=lambda action, key: app.ui_q.put(("learn", action, key)),
+        on_note=lambda note, vel: (engine.sampler.note(note, vel)
+                                   if engine.sampler is not None and app.kb_play(note)
+                                   else None),
+        on_sustain=lambda down: (engine.sampler.sustain(down)
+                                 if engine.sampler is not None else None),
     )
 
     app = App(cfg, engine, midi, on_close=save)

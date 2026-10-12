@@ -158,6 +158,20 @@ class AudioEngine:
         self._drum_skip = 0       # сколько 1/16 пропустить (вступление с такта)
         self._drum_tail = np.zeros(0, dtype=np.float32)
         self._drum_hits = {}      # кэш синтезированных ударов
+
+        # --- MIDI-инструмент (сэмплер из sounds/) ---
+        # Играет всегда (даже без транспорта); в запись лупа идёт как вход.
+        self.sampler = None
+        self._rec_in = np.zeros(self.blocksize, dtype=np.float32)
+        try:
+            from sampler import Sampler
+            self.sampler = Sampler(Path(__file__).resolve().parent / "sounds",
+                                   self.sample_rate)
+            self.sampler.set_gain(float(config.get("instr_gain", 1.0)))
+            if not self.sampler.ok:
+                self.sampler = None
+        except Exception:
+            self.sampler = None
         self._drum_events = None
         self._drum_events_key = None
         self._preview_active = False
@@ -477,6 +491,8 @@ class AudioEngine:
         self._streams = []
         self.mode = ""
         self._clicks.clear()
+        if self.sampler is not None:
+            self.sampler.all_off()
 
     @property
     def running(self) -> bool:
@@ -640,6 +656,7 @@ class AudioEngine:
             self._mono_in = np.zeros(frames, dtype=np.float32)
             self._mix = np.zeros(frames, dtype=np.float32)
             self._out = np.zeros(frames, dtype=np.float32)
+            self._rec_in = np.zeros(frames, dtype=np.float32)
 
         if indata.ndim == 1:
             x = indata[:frames]
@@ -674,6 +691,13 @@ class AudioEngine:
         cycle = self._cycle_len
         running = self.transport == "running"
 
+        # 2б. MIDI-инструмент: звучит всегда, пишется в луп вместе с входом.
+        instr = self.sampler.render(frames) if self.sampler is not None else None
+        rec_x = x
+        if instr is not None:
+            rec_x = self._rec_in[:frames]
+            np.add(x, instr, out=rec_x)
+
         # 3–4. Воспроизведение и поблочная запись выбранного лупа.
         #     Запись: в блоке со старым материалом он ИГРАЕТ, пока не превышен
         #     порог («Авто»); при пороге старая запись блока УДАЛЯЕТСЯ и пишется
@@ -683,13 +707,15 @@ class AudioEngine:
         if running:
             for s in self.slots:
                 if s.rec_active:
-                    self._rec_and_render(s, x, p0, frames, mix)
+                    self._rec_and_render(s, rec_x, p0, frames, mix)
                 elif s.length > 0:
                     self._render_at(s, p0, frames, mix)
 
         outm = self._out[:frames]
         np.multiply(mix, self.master_gain, out=outm)
         outm += x * self.monitor_gain
+        if instr is not None:
+            outm += instr
 
         # 5. Метроном — ТОЛЬКО при работающем транспорте. Новый запуск —
         #    всегда с 1-й доли (акцент); включение на лету — с ближайшего такта.

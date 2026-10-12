@@ -19,7 +19,7 @@ from tkinter import messagebox, ttk
 from audio_engine import SlotState
 from drums import STYLE_NAMES
 
-APP_VERSION = "r8.5.1 (2026-10-12)"
+APP_VERSION = "r8.6 (2026-10-12)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),
@@ -193,11 +193,14 @@ class App(tk.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
         self.tab_loops = tk.Frame(self.notebook, bg=BG)
+        self.tab_midi = tk.Frame(self.notebook, bg=BG)
         self.tab_settings = tk.Frame(self.notebook, bg=BG)
         self.notebook.add(self.tab_loops, text="   Лупы   ")
+        self.notebook.add(self.tab_midi, text="   MIDI   ")
         self.notebook.add(self.tab_settings, text="   Настройки   ")
 
         self._build_loops_tab()
+        self._build_midi_tab()
         self._build_settings_tab()
 
         self._refresh_devices()
@@ -485,11 +488,144 @@ class App(tk.Tk):
         self.engine.post("slot_click", n)
 
     # ==================================================================
+    # Вкладка «MIDI» — инструмент клавиатуры и назначения
+    # ==================================================================
+    def _build_midi_tab(self) -> None:
+        # --- Режим клавиатуры ---
+        top = self._panel(self.tab_midi, "Клавиатура")
+        self.kb_var = tk.StringVar(value=str(self.cfg.get("kb_mode", "instr")))
+        tk.Radiobutton(top, text="Играть инструмент (ноты звучат)",
+                       variable=self.kb_var, value="instr", bg=PANEL, fg=FG,
+                       activebackground=PANEL, activeforeground=FG,
+                       selectcolor=PANEL, highlightthickness=0, font=FONT,
+                       command=self._apply_kb_mode).pack(side="left")
+        tk.Radiobutton(top, text="Только управление",
+                       variable=self.kb_var, value="ctrl", bg=PANEL, fg=FG,
+                       activebackground=PANEL, activeforeground=FG,
+                       selectcolor=PANEL, highlightthickness=0, font=FONT,
+                       command=self._apply_kb_mode).pack(side="left", padx=(16, 0))
+        self._hint(top, "Ноты с назначенными действиями (см. «MIDI-назначения» ниже) "
+                        "всегда работают как управление. Педаль сустейна (CC64) поддерживается. "
+                        "Инструмент звучит всегда и пишется в луп вместе с гитарой — как живая игра.")
+
+        # --- Инструмент ---
+        inst = self._panel(self.tab_midi, "Инструмент")
+        irow = tk.Frame(inst, bg=PANEL)
+        irow.pack(fill="x")
+
+        left = tk.Frame(irow, bg=PANEL)
+        left.pack(side="left", anchor="n")
+        self._label(left, "Категория:", bg=PANEL).pack(anchor="w")
+        s = self.engine.sampler
+        groups = s.groups() if s and s.ok else []
+        self.instr_group_var = tk.StringVar()
+        ttk.Combobox(left, textvariable=self.instr_group_var, width=18,
+                     state="readonly", values=groups).pack(anchor="w", pady=(2, 6))
+        self.instr_group_var.trace_add("write", lambda *_: self._fill_instr_list())
+
+        self._label(left, "Инструмент:", bg=PANEL).pack(anchor="w")
+        self.instr_list = tk.Listbox(left, height=10, width=28, bg="#111", fg=FG,
+                                     selectbackground=ACCENT, selectforeground="white",
+                                     highlightthickness=0, font=FONT,
+                                     exportselection=False, activestyle="none")
+        self.instr_list.pack(anchor="w", pady=(2, 0))
+        self.instr_list.bind("<<ListboxSelect>>", self._instr_selected)
+        self._instr_rows: list = []
+
+        right = tk.Frame(irow, bg=PANEL)
+        right.pack(side="left", anchor="n", padx=(24, 0))
+        tk.Button(right, text="▶  Демо", width=14, bg=PANEL, fg=FG,
+                  activebackground="#3a3a3c", activeforeground=FG, font=FONT_B,
+                  command=self._demo).pack(anchor="w")
+        self._label(right, "Громкость инструмента:", bg=PANEL).pack(anchor="w", pady=(12, 0))
+        self.instr_gain_var = tk.DoubleVar(value=float(self.cfg.get("instr_gain", 1.0)))
+        tk.Scale(right, from_=0.0, to=1.5, resolution=0.05, orient="horizontal",
+                 length=150, variable=self.instr_gain_var, bg=PANEL, fg=FG,
+                 troughcolor="#111", highlightthickness=0,
+                 command=lambda _v: self._apply_instr_gain()).pack(anchor="w")
+
+        if s and s.ok:
+            idx = int(self.cfg.get("instr_index", 0))
+            if not (0 <= idx < len(s.instruments)):
+                idx = 0
+            s.set_instrument(idx)
+            self.cfg["instr_index"] = idx
+            self.instr_group_var.set(s.instruments[idx]["group"])
+        else:
+            self._hint(inst, "Папка sounds/ не найдена — инструменты недоступны. "
+                             "Скачайте полный комплект (smk37-looper.zip) и распакуйте "
+                             "поверх папки программы.")
+
+        # --- MIDI-назначения (переехали из «Настроек») ---
+        self._build_mapping()
+
+    def _apply_kb_mode(self) -> None:
+        self.cfg["kb_mode"] = self.kb_var.get()
+        mode = "клавиши играют инструмент" if self.kb_var.get() == "instr" else "клавиши — только управление"
+        self.log(f"Режим клавиатуры: {mode}")
+
+    def _apply_instr_gain(self) -> None:
+        g = float(self.instr_gain_var.get())
+        self.cfg["instr_gain"] = g
+        if self.engine.sampler is not None:
+            self.engine.sampler.set_gain(g)
+
+    def _fill_instr_list(self) -> None:
+        self.instr_list.delete(0, "end")
+        self._instr_rows = []
+        s = self.engine.sampler
+        if not (s and s.ok):
+            return
+        for idx, name in s.names_in_group(self.instr_group_var.get()):
+            self.instr_list.insert("end", name)
+            self._instr_rows.append(idx)
+        cur = s.index
+        if cur in self._instr_rows:
+            pos = self._instr_rows.index(cur)
+            self.instr_list.selection_clear(0, "end")
+            self.instr_list.selection_set(pos)
+            self.instr_list.activate(pos)
+
+    def _instr_selected(self, _event=None) -> None:
+        sel = self.instr_list.curselection()
+        if not sel or not self._instr_rows:
+            return
+        idx = self._instr_rows[sel[0]]
+        s = self.engine.sampler
+        if s and idx != s.index:
+            s.set_instrument(idx)
+            self.cfg["instr_index"] = idx
+            self.log(f"Инструмент: {s.instruments[idx]['name']}")
+
+    def _demo(self) -> None:
+        s = self.engine.sampler
+        if not (s and s.ok):
+            self.log("Звуки не найдены (папка sounds/).")
+            return
+        inst = s.instruments[s.index]
+        if inst["drums"]:
+            pattern = [(36, 110, 0), (38, 100, 220), (36, 110, 440),
+                       (38, 100, 660), (46, 95, 880)]
+            step_off = 200
+        else:
+            pattern = [(60, 90, 0), (64, 90, 200), (67, 90, 400), (72, 100, 600)]
+            step_off = 180
+        for key, vel, t in pattern:
+            self.after(t, lambda k=key, v=vel: s.note(k, v))
+            self.after(t + step_off, lambda k=key: s.note(k, 0))
+        self.log(f"Демо: {inst['name']}")
+
+    def kb_play(self, note: int) -> bool:
+        """Может ли нота звучать как инструмент (не занята управлением)."""
+        if str(self.cfg.get("kb_mode", "instr")) != "instr":
+            return False
+        return f"note:{note}" not in self.mapping
+
+    # ==================================================================
     # Вкладка «Настройки»
     # ==================================================================
     def _build_settings_tab(self) -> None:
         self._build_devices_bar()
-        self._build_mapping()
         self._build_log()
 
     def _build_devices_bar(self) -> None:
@@ -560,7 +696,7 @@ class App(tk.Tk):
                  command=lambda _v: self.engine.set_gains(master=float(_v))).pack(side="left", padx=4)
 
     def _build_mapping(self) -> None:
-        frame = tk.Frame(self.tab_settings, bg=BG, pady=6)
+        frame = tk.Frame(self.tab_midi, bg=BG, pady=6)
         frame.pack(fill="both", padx=12)
         self._label(frame, "MIDI-назначения (нажмите «Назначить», затем кнопку на SMK-37):",
                     font=FONT_B).pack(anchor="w", pady=(0, 6))
