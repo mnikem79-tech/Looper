@@ -17,8 +17,9 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from audio_engine import SlotState
+from drums import STYLE_NAMES
 
-APP_VERSION = "r7 (2026-10-11)"
+APP_VERSION = "r8 (2026-10-12)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),
@@ -27,6 +28,7 @@ ACTIONS = [
     ("clear", "Очистить слот"),
     ("stop_all", "Стоп (всё + сброс)"),
     ("toggle_metronome", "Метроном вкл/выкл"),
+    ("toggle_drum", "Драм-машина вкл/выкл"),
     ("next_slot", "Следующий луп"),
     ("prev_slot", "Предыдущий луп"),
 ] + [(f"slot_{i}", f"Выбрать луп {i}") for i in range(1, 5)]
@@ -246,13 +248,24 @@ class App(tk.Tk):
                                         font=("Segoe UI", 10, "bold"))
         self.status_label.pack(side="right")
 
-        # --- Метроном + темп ---
-        m = self._panel(self.tab_loops, "Метроном")
+        # --- Метроном + драм-машина + темп ---
+        m = self._panel(self.tab_loops, "Метроном / Драм-машина")
         self.metro_var = tk.BooleanVar(value=bool(self.cfg.get("metronome_on", False)))
         tk.Checkbutton(m, text="Метроном вкл.", variable=self.metro_var, bg=PANEL, fg=FG,
                        activebackground=PANEL, activeforeground=FG, selectcolor=PANEL,
                        highlightthickness=0,
                        command=self._apply_loops_params).pack(side="left")
+
+        # Кнопка «Драм-машина» — рядом с метрономом; спойлер снизу
+        self.drum_var = tk.BooleanVar(value=bool(self.cfg.get("drum_on", False)))
+        self.drum_btn = tk.Button(
+            m, text="Драм-машина", width=12,
+            bg=PANEL, fg=FG, activebackground="#3a3a3c", activeforeground=FG,
+            font=("Segoe UI", 9, "bold"),
+            command=self._toggle_drum,
+        )
+        self.drum_btn.pack(side="left", padx=(14, 0))
+        self.metro_panel = m
 
         self._label(m, "Звук:", bg=PANEL).pack(side="left", padx=(14, 0))
         self.metro_sound_var = tk.StringVar(value=str(self.cfg.get("metro_sound", "wood")))
@@ -267,6 +280,30 @@ class App(tk.Tk):
                  command=lambda _v: self._apply_loops_params()).pack(side="left")
         self._label(m, "Темп и размер — общие с циклом (см. «Запись»).",
                     bg=PANEL, fg=DIM).pack(side="left", padx=(14, 0))
+
+        # --- Спойлер драм-машины: стиль + предпрослушивание ---
+        d = self._panel(self.tab_loops, "Драм-машина (стили)")
+        self.drum_style_var = tk.StringVar(value=str(self.cfg.get("drum_style", "Поп")))
+        self._label(d, "Стиль:", bg=PANEL).pack(side="left")
+        ttk.Combobox(d, textvariable=self.drum_style_var, width=12, state="readonly",
+                     values=STYLE_NAMES).pack(side="left", padx=4)
+        self.drum_style_var.trace_add("write", lambda *_: self._apply_loops_params())
+
+        self.drum_prev_btn = tk.Button(
+            d, text="▶ Предпрослушивание", width=18,
+            bg=PANEL, fg=FG, activebackground="#3a3a3c", activeforeground=FG,
+            command=self._toggle_drum_preview,
+        )
+        self.drum_prev_btn.pack(side="left", padx=(14, 0))
+
+        self._label(d, "Громкость:", bg=PANEL).pack(side="left", padx=(14, 0))
+        self.drum_gain_var = tk.DoubleVar(value=float(self.cfg.get("drum_gain", 0.7)))
+        tk.Scale(d, from_=0.0, to=1.5, resolution=0.05, orient="horizontal", length=100,
+                 variable=self.drum_gain_var, bg=PANEL, fg=FG, highlightthickness=0,
+                 command=lambda _v: self._apply_loops_params()).pack(side="left")
+        self._label(d, "Играет с транспортом; крэш — 1-й такт цикла, брейк — последний. В лупы не пишется.",
+                    bg=PANEL, fg=DIM).pack(side="left", padx=(14, 0))
+        self.drum_panel = d
 
         # --- Темп / такты / блоки (ОБЩИЙ темп для метронома и цикла) ---
         b = self._panel(self.tab_loops,
@@ -402,6 +439,8 @@ class App(tk.Tk):
             font=("Segoe UI", 10), command=self.export_wav,
         ).pack(side="left", padx=4)
 
+        self._sync_drum_ui()
+
     def _zoom_changed(self) -> None:
         self.cfg["zoom"] = float(self.zoom_var.get())
         for r in self.rows:
@@ -536,6 +575,9 @@ class App(tk.Tk):
         self.engine.metro_gain = float(self.metro_gain_var.get())
         self.engine.autostart = self.autostart_var.get() == "auto"
         self.engine.threshold = float(self.thr_var.get())
+        self.engine.drum_on = bool(self.drum_var.get())
+        self.engine.drum_style = self.drum_style_var.get()
+        self.engine.drum_gain = float(self.drum_gain_var.get())
 
         self.cfg.update({
             "bpm": self.engine.bpm,
@@ -547,6 +589,9 @@ class App(tk.Tk):
             "metro_gain": self.engine.metro_gain,
             "autostart": self.engine.autostart,
             "threshold": self.engine.threshold,
+            "drum_on": self.engine.drum_on,
+            "drum_style": self.engine.drum_style,
+            "drum_gain": self.engine.drum_gain,
         })
 
         total_bars = self.engine.fixed_total_bars()
@@ -555,6 +600,39 @@ class App(tk.Tk):
         )
         for r in self.rows:
             r.force_redraw()
+
+    # ------------------------------------------------------------------
+    # Драм-машина
+    # ------------------------------------------------------------------
+    def _toggle_drum(self) -> None:
+        self.drum_var.set(not self.drum_var.get())
+        self._apply_loops_params()
+        self._sync_drum_ui()
+        self.log("Драм-машина: " + ("включена (вступление с такта)" if self.drum_var.get()
+                                    else "выключена"))
+
+    def _sync_drum_ui(self) -> None:
+        """Вид кнопки и видимость спойлера — по состоянию драм-машины."""
+        on = bool(self.drum_var.get())
+        self.drum_btn.configure(
+            bg=PLAY if on else PANEL,
+            fg="#111" if on else FG,
+            activebackground="#5ee07f" if on else "#3a3a3c",
+            activeforeground="#111" if on else FG,
+        )
+        if on:
+            self.drum_panel.pack(fill="x", padx=10, after=self.metro_panel)
+        else:
+            self.drum_panel.pack_forget()
+
+    def _toggle_drum_preview(self) -> None:
+        if not self.engine.running:
+            self.log("Звук не запущен — предпрослушивание недоступно")
+            return
+        if self.engine.transport == "running":
+            self.log("Транспорт уже играет — драмы звучат вместе с ним")
+            return
+        self.engine.post("toggle_drum_preview")
 
     def _loops_params_sig(self) -> str:
         return (f"{self.engine.bpm:.2f}|{self.engine.beats_per_bar}|"
@@ -673,7 +751,8 @@ class App(tk.Tk):
         self.log(f"Назначение сброшено: {ACTION_LABELS[action]}")
 
     def do_action(self, action: str) -> None:
-        if not self.engine.running and action in ("toggle_rec", "toggle_play", "stop_all"):
+        if not self.engine.running and action in (
+                "toggle_rec", "toggle_play", "stop_all", "toggle_drum_preview"):
             self.log("Сначала запустите аудио («Применить» в верхней панели)")
             return
         self.engine.post(action)
@@ -770,6 +849,20 @@ class App(tk.Tk):
                 self.log("   " + line)
 
     def _update_from_snapshot(self) -> None:
+        # Синхронизация драм-машины (состояние могло измениться с MIDI)
+        if self.drum_var.get() != self.engine.drum_on:
+            self.drum_var.set(self.engine.drum_on)
+            self._sync_drum_ui()
+        preview = bool(getattr(self.engine, "drum_preview", False))
+        if getattr(self, "_preview_shown", None) != preview:
+            self._preview_shown = preview
+            self.drum_prev_btn.config(
+                text="■ Стоп прослушивания" if preview else "▶ Предпрослушивание",
+                bg=REC if preview else PANEL,
+                fg="white" if preview else FG,
+                activebackground="#ff6961" if preview else "#3a3a3c",
+                activeforeground="white" if preview else FG,
+            )
         snap = self.engine.snapshot()
         current = snap["current"]
         sig = self._loops_params_sig()

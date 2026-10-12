@@ -26,6 +26,9 @@ DEFAULTS = {
     "metronome_on": False,
     "metro_sound": "wood",
     "metro_gain": 0.5,
+    "drum_on": False,
+    "drum_style": "Поп",
+    "drum_gain": 0.7,
 }
 
 

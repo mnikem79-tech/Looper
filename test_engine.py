@@ -65,6 +65,17 @@ def flush(e: AudioEngine):
     return process(e, block_signal(0.0))
 
 
+def feed_out(e: AudioEngine, value, total, chunk=BLOCK):
+    """Скормить тишину/сигнал и вернуть выход целиком."""
+    out_parts = []
+    done = 0
+    while done < total:
+        n = min(chunk, total - done)
+        out_parts.append(process(e, np.full(n, float(value), dtype=np.float32)))
+        done += n
+    return np.concatenate(out_parts) if out_parts else np.zeros(0, dtype=np.float32)
+
+
 CYCLE = 192000
 BLOCK_LEN = 96000
 
@@ -610,6 +621,109 @@ def test_metronome_clicks():
 # ======================================================================
 # Волноформа, кольцо, экспорт
 # ======================================================================
+def test_drum_events_adapt():
+    """Таблица драм-машины: крэш — 1-й такт, брейк — последний; размер и такты."""
+    from drums import build_events
+
+    # 4/4, 2 такта цикла (такты=1, блоки=2): слот 1/16, такт = 16 слотов
+    t = build_events("Поп", 4, 1, 2)
+    assert len(t) == 32
+    names0 = [n for n, _v in t[0]]
+    assert "crash" in names0 and "kick" in names0          # начало цикла
+    assert all("crash" not in [n for n, _v in s] for s in t[1:])
+    fill = [i for i, s in enumerate(t) if any(n == "fsnare" for n, _v in s)]
+    assert fill and all(i >= 24 for i in fill)             # брейк в последнем такте
+    # «Диско»: бочка на каждую долю (слоты 0, 4, 8, 12 такта)
+    td = build_events("Диско", 4, 1, 1)
+    kicks = [i for i, s in enumerate(td) if any(n == "kick" for n, _v in s)]
+    assert set(kicks) >= {0, 4, 8, 12}
+    # размер 3/4: такт = 12 слотов, паттерн сжимается под размер
+    t3 = build_events("Диско", 3, 1, 1)
+    assert len(t3) == 12
+    kicks3 = [i for i, s in enumerate(t3) if any(n == "kick" for n, _v in s)]
+    assert 0 in kicks3
+    assert kicks3 != [0, 4, 8, 12]                          # масштабирование
+    # количество тактов: 2×2 = 4 такта — брейк на 4-м, крэш только на 1-м
+    t4 = build_events("Рок", 4, 2, 2)
+    assert len(t4) == 64
+    crash_bars = sorted({i // 16 for i, s in enumerate(t4)
+                         if any(n == "crash" for n, _v in s)})
+    fill_bars = sorted({i // 16 for i, s in enumerate(t4)
+                        if any(n == "fsnare" for n, _v in s)})
+    assert crash_bars == [0]
+    assert fill_bars == [3]
+    print("OK  драм-таблица (стили/размер/такты)")
+
+
+def test_drum_plays_with_transport():
+    """Драмы звучат только с транспортом; отбивка тактов = длина такта."""
+    e = make_engine({"drum_on": True, "drum_gain": 1.0, "monitor_gain": 0.0,
+                     "drum_style": "Диско", "bars_per_block": 1, "num_blocks": 2})
+    y = feed_out(e, 0.0, 5000)                # стоп — тишина
+    assert float(np.max(np.abs(y))) == 0.0
+    e.post("toggle_play")
+    y = np.concatenate([process(e, block_signal(0.0)) for _ in range(400)])
+    # такт = 96000 (BPM 120, 4/4); крэш+бочка — на 0 и на 96000
+    assert float(np.max(np.abs(y[:800]))) > 0.05
+    assert float(np.max(np.abs(y[95500:96500]))) > 0.05
+    e.post("stop_all")
+    y = feed_out(e, 0.0, 5000)
+    assert float(np.max(np.abs(y))) == 0.0
+    print("OK  драмы только с транспортом")
+
+
+def test_drum_follows_tempo():
+    """Темп общий: BPM 60 — такт вдвое длиннее."""
+    e = make_engine({"drum_on": True, "drum_gain": 1.0, "monitor_gain": 0.0,
+                     "drum_style": "Диско", "bpm": 60.0,
+                     "bars_per_block": 1, "num_blocks": 1})
+    e.post("toggle_play")
+    y = np.concatenate([process(e, block_signal(0.0)) for _ in range(900)])
+    # такт = 192000: второй такт цикла (в цикле 1 такт — просто следующий круг)
+    assert float(np.max(np.abs(y[:800]))) > 0.05
+    assert float(np.max(np.abs(y[191500:192500]))) > 0.05
+    print("OK  драмы подстраиваются под темп")
+
+
+def test_drum_not_recorded():
+    """Драм-машина не пишется в лупы (только в выход)."""
+    e = make_engine({"drum_on": True, "drum_gain": 1.0, "monitor_gain": 0.0,
+                     "autostart": False})
+    e.post("toggle_play")
+    e.post("toggle_rec")
+    feed(e, 0.0, CYCLE)                       # тишина на входе + драмы на выходе
+    e.post("toggle_rec")
+    flush(e)
+    s = e.slots[0]
+    assert s.length == CYCLE
+    assert float(np.max(np.abs(s.data[:CYCLE]))) == 0.0
+    print("OK  драмы в луп не пишутся")
+
+
+def test_drum_preview():
+    """Предпрослушивание без транспорта: один цикл и само выключение."""
+    e = make_engine({"drum_on": False, "drum_gain": 1.0, "monitor_gain": 0.0,
+                     "drum_style": "Диско", "bars_per_block": 1, "num_blocks": 2})
+    e.post("toggle_drum_preview")
+    y = np.concatenate([process(e, block_signal(0.0)) for _ in range(800)])
+    assert float(np.max(np.abs(y[:800]))) > 0.05          # играет
+    assert float(np.max(np.abs(y[192000:200000]))) == 0.0  # цикл кончился — тишина
+    assert e.drum_preview is False
+    print("OK  предпрослушивание (цикл и стоп)")
+
+
+def test_drum_styles_differ():
+    """Разные стили звучат по-разному."""
+    outs = []
+    for style in ("Поп", "Диско"):
+        e = make_engine({"drum_on": True, "drum_gain": 1.0, "monitor_gain": 0.0,
+                         "drum_style": style, "bars_per_block": 1, "num_blocks": 1})
+        e.post("toggle_play")
+        outs.append(np.concatenate([process(e, block_signal(0.0)) for _ in range(400)]))
+    assert float(np.max(np.abs(outs[0] - outs[1]))) > 0.1
+    print("OK  стили различаются")
+
+
 def test_get_wave():
     e = make_engine()
     e.post("toggle_rec")
@@ -706,6 +820,12 @@ if __name__ == "__main__":
     test_metronome_clicks()
     test_metronome_only_when_running()
     test_metronome_join_midrun()
+    test_drum_events_adapt()
+    test_drum_plays_with_transport()
+    test_drum_follows_tempo()
+    test_drum_not_recorded()
+    test_drum_preview()
+    test_drum_styles_differ()
     test_get_wave()
     test_ring_buffer()
     test_ring_read_latency_clamp()

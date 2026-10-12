@@ -18,9 +18,10 @@
   (остаётся прошлый материал) и рисуется серым. Зелёный — весь блок с порогом.
 - Переключение дорожки при записи: новая пишет с текущей позиции тайминга.
 
-Метроном (в цикл не пишется): при работающем транспорте — по позиции цикла,
-иначе — по абсолютному времени. Режимы звука: «duplex» или «split»
-(обход PortAudio -9993).
+Метроном и драм-машина (в цикл не пишутся): при работающем транспорте —
+по позиции цикла, включение на лету — со следующего такта. Драм-машина
+подстраивается под темп, размер и количество тактов (см. drums.py).
+Режимы звука: «duplex» или «split» (обход PortAudio -9993).
 """
 import math
 import os
@@ -31,6 +32,8 @@ from enum import Enum
 from pathlib import Path
 
 import numpy as np
+
+import drums
 
 # ASIO-поддержка в sounddevice (Windows) включается переменной окружения
 # ДО импорта модуля. Колёса sounddevice >= 0.5.1 содержат обе версии DLL.
@@ -145,6 +148,19 @@ class AudioEngine:
         self._click_tail = np.zeros(0, dtype=np.float32)
         self._metro_on_prev = self.metronome_on
         self._metro_skip = 0      # сколько долей пропустить (вступление с такта)
+
+        # --- драм-машина (как метроном: только при работающем транспорте) ---
+        self.drum_on = bool(config.get("drum_on", False))
+        self.drum_style = str(config.get("drum_style", drums.DEFAULT_STYLE))
+        self.drum_gain = float(config.get("drum_gain", 0.7))
+        self._drum_on_prev = self.drum_on
+        self._drum_skip = 0       # сколько 1/16 пропустить (вступление с такта)
+        self._drum_tail = np.zeros(0, dtype=np.float32)
+        self._drum_hits = {}      # кэш синтезированных ударов
+        self._drum_events = None
+        self._drum_events_key = None
+        self._preview_active = False
+        self._preview_pos = 0
         self._abs_samples = 0
 
         # --- единый транспорт ---
@@ -684,6 +700,25 @@ class AudioEngine:
         if self.metronome_on and running:
             self._render_metro_span(outm, p0, frames, cycle)
 
+        # 5б. Драм-машина — ТОЛЬКО при работающем транспорте (как метроном),
+        #     включение на лету — со следующего такта. Предпрослушивание
+        #     играет без транспорта один цикл и выключается само.
+        if self.drum_on != self._drum_on_prev:
+            if self.drum_on:
+                self._drum_skip = self._slots_to_next_bar()
+            else:
+                self._drum_skip = 0
+                self._drum_tail = np.zeros(0, dtype=np.float32)  # убрать хвост
+            self._drum_on_prev = self.drum_on
+        if self.drum_on and running:
+            self._render_drums_span(outm, p0, frames)
+        elif self._preview_active and not running:
+            self._render_drums_span(outm, self._preview_pos, frames)
+            self._preview_pos += frames
+            if self._preview_pos >= self._cycle_len:
+                self._preview_active = False
+                self._drum_tail = np.zeros(0, dtype=np.float32)
+
         # 6. Пики, позиция, кольцо.
         self.out_peak = float(np.max(np.abs(outm))) if frames else 0.0
         if running:
@@ -874,6 +909,8 @@ class AudioEngine:
         self._pos = 0
         self.transport = "running"
         self._metro_skip = 0
+        self._drum_skip = 0
+        self._preview_active = False
 
     def _transport_toggle(self) -> None:
         """«Старт/Стоп»: пауза/продолжить все дорожки разом."""
@@ -976,6 +1013,85 @@ class AudioEngine:
         return (y / peak).astype(np.float32)
 
     # ------------------------------------------------------------------
+    # Драм-машина (только при работающем транспорте; см. drums.py)
+    # ------------------------------------------------------------------
+    @property
+    def drum_preview(self) -> bool:
+        return self._preview_active
+
+    def _drum_table(self) -> list:
+        key = (self.drum_style, self.beats_per_bar,
+               self.bars_per_block, self.num_blocks)
+        if key != self._drum_events_key:
+            self._drum_events = drums.build_events(*key)
+            self._drum_events_key = key
+        return self._drum_events
+
+    def _slots_to_next_bar(self) -> int:
+        """Сколько 1/16 пропустить, чтобы выйти на границу такта (1-я доля)."""
+        if self.transport not in ("running", "paused"):
+            return 0                            # начнёт с транспортом — с доли 1
+        spb = self.sample_rate * 60.0 / max(self.bpm, 1.0)
+        slot_len = spb / 4.0
+        slots_per_bar = max(1, self.beats_per_bar) * 4
+        pos = float(self._pos)
+        k0 = int(math.ceil(pos / slot_len - 1e-9))
+        kb = int(math.ceil(pos / (slot_len * slots_per_bar) - 1e-9)) * slots_per_bar
+        return max(0, kb - k0)
+
+    def _render_drums_span(self, out: np.ndarray, start: int, frames: int) -> None:
+        """Удары по сетке 1/16 позиции цикла; хвосты ударов дорисовываются."""
+        if len(self._drum_tail):
+            t = min(len(self._drum_tail), frames)
+            out[:t] += self._drum_tail[:t]
+            self._drum_tail = self._drum_tail[t:]
+
+        table = self._drum_table()
+        n_slots = len(table)
+        if n_slots == 0:
+            return
+        spb = self.sample_rate * 60.0 / max(self.bpm, 1.0)
+        slot_len = spb / 4.0
+        base = float(start)
+        end = base + frames
+        m = int(math.ceil(base / slot_len - 1e-9))
+        while m * slot_len < end:
+            if self._drum_skip > 0:
+                self._drum_skip -= 1           # вступление с ближайшего такта
+            else:
+                evs = table[m % n_slots]
+                if evs:
+                    off = int(round(m * slot_len - base))
+                    for name, vel in evs:
+                        self._mix_drum(out, off, self._get_hit(name),
+                                       vel * self.drum_gain)
+            m += 1
+
+    def _mix_drum(self, out: np.ndarray, off: int, hit: np.ndarray,
+                  gain: float) -> None:
+        n = len(hit)
+        if off >= len(out):
+            return
+        if off < 0:
+            hit = hit[-off:]
+            n = len(hit)
+            off = 0
+            if n == 0:
+                return
+        take = min(n, len(out) - off)
+        out[off:off + take] += hit[:take] * gain
+        if take < n:
+            tail = hit[take:] * gain
+            self._drum_tail = np.concatenate((self._drum_tail, tail)).astype(np.float32)
+
+    def _get_hit(self, name: str) -> np.ndarray:
+        hit = self._drum_hits.get((name, self.sample_rate))
+        if hit is None:
+            hit = drums.make_hit(name, self.sample_rate)
+            self._drum_hits[(name, self.sample_rate)] = hit
+        return hit
+
+    # ------------------------------------------------------------------
     # Команды
     # ------------------------------------------------------------------
     def _apply_command(self, action: str, arg) -> None:
@@ -997,6 +1113,15 @@ class AudioEngine:
             self._switch_slot((self.current_slot - 1) % self.n_slots)
         elif action == "toggle_metronome":
             self.metronome_on = not self.metronome_on
+        elif action == "toggle_drum":
+            self.drum_on = not self.drum_on
+        elif action == "toggle_drum_preview":
+            if self._preview_active:
+                self._preview_active = False
+                self._drum_tail = np.zeros(0, dtype=np.float32)
+            else:
+                self._preview_active = True
+                self._preview_pos = 0
         elif action == "set_bpm" and arg is not None:
             self.bpm = max(30.0, min(300.0, float(arg)))
             self.update_grid()
