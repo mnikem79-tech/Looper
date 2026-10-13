@@ -932,6 +932,38 @@ def test_ring_read_latency_clamp():
     print("OK  ограничение задержки кольца")
 
 
+def test_input_gain():
+    """Усиление входа (preamp): до индикатора, мониторинга и записи; исходник не портится."""
+    e = make_engine({"monitor_gain": 1.0})
+    e.set_gains(input_gain=2.0)
+
+    # мониторинг: 0.2 × 2 = 0.4 (лупов нет — на выходе только вход)
+    src = block_signal(0.2)
+    out = process(e, src)
+    assert abs(float(np.mean(out)) - 0.4) < 1e-3, float(np.mean(out))
+    # индикатор входа — ПОСЛЕ усиления
+    assert abs(e._env - 0.4) < 1e-3
+    # чужой буфер не изменён (in-place запрещён)
+    assert np.all(src == np.float32(0.2))
+
+    # запись: в слот попадает усиленный сигнал
+    e2 = make_engine()
+    e2.set_gains(input_gain=2.0)
+    e2.post("toggle_rec")
+    feed(e2, 0.25, CYCLE)
+    e2.post("toggle_rec")
+    flush(e2)
+    s = e2.slots[0]
+    assert s.length > 0
+    peak = float(np.max(np.abs(s.data[:s.length])))
+    assert abs(peak - 0.5) < 1e-3, peak
+
+    # усиление не опускается ниже единицы (аттенюатор — нет)
+    e2.set_gains(input_gain=0.5)
+    assert e2.input_gain == 1.0
+    print("OK  усиление входа (preamp)")
+
+
 def test_export(tmp="test_export.wav"):
     import os
 
@@ -987,5 +1019,6 @@ if __name__ == "__main__":
     test_get_wave()
     test_ring_buffer()
     test_ring_read_latency_clamp()
+    test_input_gain()
     test_export()
     print("\nВсе тесты пройдены ✔")

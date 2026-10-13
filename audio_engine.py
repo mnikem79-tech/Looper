@@ -124,6 +124,7 @@ class AudioEngine:
         self.n_slots = int(config.get("slots", 4))
         self.sample_rate = int(config.get("sample_rate", 48000))
         self.blocksize = int(config.get("blocksize", 256))
+        self.input_gain = float(config.get("input_gain", 1.0))
         self.monitor_gain = float(config.get("monitor_gain", 1.0))
         self.master_gain = float(config.get("master_gain", 1.0))
         self.dub_gain = float(config.get("dub_gain", 1.0))
@@ -196,6 +197,7 @@ class AudioEngine:
         # Рабочие буферы (переиспользуются в колбэке)
         bs = self.blocksize
         self._mono_in = np.zeros(bs, dtype=np.float32)
+        self._xin = np.zeros(bs, dtype=np.float32)
         self._mix = np.zeros(bs, dtype=np.float32)
         self._out = np.zeros(bs, dtype=np.float32)
         self._drum_bus = np.zeros(bs, dtype=np.float32)
@@ -226,7 +228,9 @@ class AudioEngine:
     def post(self, action: str, arg=None) -> None:
         self.cmd_q.put((action, arg))
 
-    def set_gains(self, monitor=None, master=None, dub=None) -> None:
+    def set_gains(self, monitor=None, master=None, dub=None, input_gain=None) -> None:
+        if input_gain is not None:
+            self.input_gain = max(1.0, float(input_gain))
         if monitor is not None:
             self.monitor_gain = float(monitor)
         if master is not None:
@@ -665,6 +669,16 @@ class AudioEngine:
         else:
             x = self._mono_in[:frames]
             np.mean(indata[:frames], axis=1, out=x)
+
+        # 0. Усиление входа (preamp): ДО индикатора, порога, мониторинга и записи.
+        #    Исходный буфер не трогаем (в тестах indata — чужой массив).
+        g_in = self.input_gain
+        if g_in != 1.0:
+            if frames > self._xin.shape[0]:
+                self._xin = np.zeros(frames, dtype=np.float32)
+            xs = self._xin[:frames]
+            np.multiply(x, g_in, out=xs)
+            x = xs
 
         abs_start = self._abs_samples
 

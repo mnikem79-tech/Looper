@@ -59,6 +59,7 @@ def main() -> int:
     app.instr_gain_var.set(0.5)
     app.mon_var.set(0.8)
     app.mst_var.set(1.0)
+    app.inp_gain_var.set(1.5)
     app.update()
     print("OK  ползунки")
 

@@ -19,7 +19,7 @@ from tkinter import messagebox, ttk
 from audio_engine import SlotState
 from drums import STYLE_NAMES, canonical
 
-APP_VERSION = "r8.8 (2026-10-13)"
+APP_VERSION = "r8.9 (2026-10-13)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),
@@ -387,6 +387,11 @@ class App(tk.Tk):
         self.in_meter = tk.Canvas(row, width=METER_WIDTH, height=14, bg=INSET,
                                   highlightthickness=1, highlightbackground=BORDER)
         self.in_meter.pack(side="left", padx=(4, 16))
+        self._label(row, "Усил.", width=5, anchor="w", font=FONT_B, fg=DIM).pack(side="left")
+        self.inp_gain_var = tk.DoubleVar(value=float(self.cfg.get("input_gain", 1.0)))
+        self._scale(row, self.inp_gain_var, 1.0, 4.0, 0.05,
+                    lambda _v: self.engine.set_gains(input_gain=float(_v)),
+                    length=80).pack(side="left", padx=(2, 14))
         self._label(row, "ВЫХОД", width=6, anchor="w", font=FONT_B, fg=DIM).pack(side="left")
         self.out_meter = tk.Canvas(row, width=METER_WIDTH, height=14, bg=INSET,
                                    highlightthickness=1, highlightbackground=BORDER)
@@ -1235,6 +1240,7 @@ class App(tk.Tk):
         self.midi.cancel_learn()
         self.midi.close()
         self.engine.stop()
+        self.cfg["input_gain"] = float(self.inp_gain_var.get())
         self.cfg["monitor_gain"] = float(self.mon_var.get())
         self.cfg["master_gain"] = float(self.mst_var.get())
         self.cfg["mapping"] = self.mapping
