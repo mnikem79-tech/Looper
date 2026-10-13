@@ -794,6 +794,41 @@ def test_drum_styles_differ():
     print("OK  стили различаются")
 
 
+def test_drum_style_library():
+    """Библиотека стилей: 3 варианта на жанр, все размеры, рим/призраки, алиасы."""
+    from drums import STYLE_NAMES, build_events, canonical
+
+    # каждый стиль собирается для всех размеров и содержит бочку/малый
+    for name in STYLE_NAMES:
+        for bpb in (2, 3, 4, 5, 6):
+            t = build_events(name, bpb, 2, 2)
+            assert t, name
+            assert any(any(n in ("kick", "snare") for n, _v in s) for s in t), (name, bpb)
+
+    # у каждого жанра ровно 3 варианта, и все три — РАЗНЫЕ рисунки
+    genres = {}
+    for name in STYLE_NAMES:
+        genres.setdefault(name.rsplit(" ", 1)[0], []).append(name)
+    assert len(genres) >= 18, sorted(genres)
+    for g, names in genres.items():
+        assert len(names) == 3, (g, names)
+        sigs = {tuple(tuple(s) for s in build_events(n, 4, 1, 1)) for n in names}
+        assert len(sigs) == 3, g
+
+    # рим-клик и «призраки» реально попадают в таблицу событий
+    assert any(any(n == "fsnare" for n, _v in s)
+               for s in build_events("Боса-нова 1", 4, 1, 1))
+    assert any(any(n == "snare" for n, _v in s)
+               for s in build_events("Фанк 2", 4, 1, 1))
+
+    # алиасы старых имён из настроек работают
+    assert canonical("Поп") == "Поп 1"
+    assert canonical("Поп 2") == "Поп 2"
+    assert canonical("выдумка") == "Поп 1"
+    assert build_events("Поп", 4, 1, 1) == build_events("Поп 1", 4, 1, 1)
+    print(f"OK  библиотека стилей ({len(STYLE_NAMES)} стилей = 3 × {len(genres)} жанров)")
+
+
 def test_mute_slot():
     """Mute глушит воспроизведение слота, но запись не трогает."""
     e = make_engine({"monitor_gain": 0.0})
@@ -946,6 +981,7 @@ if __name__ == "__main__":
     test_drum_not_recorded()
     test_drum_preview()
     test_drum_styles_differ()
+    test_drum_style_library()
     test_mute_slot()
     test_slot_click()
     test_get_wave()

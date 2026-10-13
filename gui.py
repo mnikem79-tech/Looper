@@ -17,9 +17,9 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from audio_engine import SlotState
-from drums import STYLE_NAMES
+from drums import STYLE_NAMES, canonical
 
-APP_VERSION = "r8.7.1 (2026-10-13)"
+APP_VERSION = "r8.8 (2026-10-13)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),
@@ -441,9 +441,9 @@ class App(tk.Tk):
                                    highlightthickness=1, highlightbackground=BORDER)
         dtop = tk.Frame(self.drum_panel, bg=PANEL2)
         dtop.pack(fill="x")
-        self.drum_style_var = tk.StringVar(value=str(self.cfg.get("drum_style", "Поп")))
+        self.drum_style_var = tk.StringVar(value=canonical(self.cfg.get("drum_style", "Поп")))
         self._label(dtop, "Стиль:", bg=PANEL2).pack(side="left")
-        ttk.Combobox(dtop, textvariable=self.drum_style_var, width=12, state="readonly",
+        ttk.Combobox(dtop, textvariable=self.drum_style_var, width=15, state="readonly",
                      values=STYLE_NAMES).pack(side="left", padx=4)
         self.drum_style_var.trace_add("write", lambda *_: self._apply_loops_params())
 
