@@ -19,7 +19,7 @@ from tkinter import messagebox, ttk
 from audio_engine import SlotState
 from drums import STYLE_NAMES
 
-APP_VERSION = "r8.7 (2026-10-12)"
+APP_VERSION = "r8.7.1 (2026-10-13)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),
@@ -361,7 +361,12 @@ class App(tk.Tk):
         val_lbl = tk.Label(wrap, text="0%", width=5, bg=wrap_bg, fg=DIM,
                            font=FONT, anchor="w")
         val_lbl.pack(side="left", padx=(6, 0))
-        _cmd(var.get())
+        # При СБОРКЕ окна инициализируем только подпись: command НЕ вызываем,
+        # иначе он сработает до создания остальных виджетов (падение на старте).
+        try:
+            val_lbl.config(text=f"{float(var.get()) * 100:.0f}%")
+        except Exception:
+            pass
         return wrap
 
     def content_width(self) -> int:
@@ -854,14 +859,17 @@ class App(tk.Tk):
         except Exception:
             pass
         self.engine.update_grid()
-        self.engine.metronome_on = bool(self.metro_var.get())
-        self.engine.metro_sound = self.metro_sound_var.get()
-        self.engine.metro_gain = float(self.metro_gain_var.get())
-        self.engine.autostart = self.autostart_var.get() == "auto"
-        self.engine.threshold = float(self.thr_var.get())
-        self.engine.drum_on = bool(self.drum_var.get())
-        self.engine.drum_style = self.drum_style_var.get()
-        self.engine.drum_gain = float(self.drum_gain_var.get())
+        try:
+            self.engine.metronome_on = bool(self.metro_var.get())
+            self.engine.metro_sound = self.metro_sound_var.get()
+            self.engine.metro_gain = float(self.metro_gain_var.get())
+            self.engine.autostart = self.autostart_var.get() == "auto"
+            self.engine.threshold = float(self.thr_var.get())
+            self.engine.drum_on = bool(self.drum_var.get())
+            self.engine.drum_style = self.drum_style_var.get()
+            self.engine.drum_gain = float(self.drum_gain_var.get())
+        except AttributeError:
+            return  # окно ещё не полностью собрано — вызов преждевременный
 
         self.cfg.update({
             "bpm": self.engine.bpm,
@@ -878,12 +886,15 @@ class App(tk.Tk):
             "drum_gain": self.engine.drum_gain,
         })
 
-        total_bars = self.engine.fixed_total_bars()
-        self.total_label.config(
-            text=f"Итого: {total_bars} такт. ≈ {self.engine.fixed_total_sec():.1f} с"
-        )
-        for r in self.rows:
-            r.force_redraw()
+        try:
+            total_bars = self.engine.fixed_total_bars()
+            self.total_label.config(
+                text=f"Итого: {total_bars} такт. ≈ {self.engine.fixed_total_sec():.1f} с"
+            )
+            for r in self.rows:
+                r.force_redraw()
+        except AttributeError:
+            pass
 
     # ------------------------------------------------------------------
     # Драм-машина
