@@ -19,7 +19,7 @@ from tkinter import messagebox, ttk
 from audio_engine import SlotState
 from drums import STYLE_NAMES
 
-APP_VERSION = "r8.6 (2026-10-12)"
+APP_VERSION = "r8.7 (2026-10-12)"
 
 ACTIONS = [
     ("toggle_rec", "Запись / Дубль"),
@@ -35,15 +35,33 @@ ACTIONS = [
 
 ACTION_LABELS = dict(ACTIONS)
 
-BG = "#1c1c1e"
-PANEL = "#2c2c2e"
-FG = "#e8e8ea"
-DIM = "#8e8e93"
-ACCENT = "#0a84ff"
-REC = "#ff453a"
-PLAY = "#30d158"
-WARN = "#ffd60a"
-WAVE = "#64d2ff"
+# ----------------------------------------------------------------------
+# Палитра: современная тёмная рабочая станция (см. описание стиля)
+# ----------------------------------------------------------------------
+BG = "#0B0E12"          # фон приложения
+PANEL = "#141920"        # основная поверхность
+PANEL2 = "#1A2028"       # приподнятая поверхность
+CTRL = "#202832"         # поверхность контролов
+BORDER = "#2A333E"       # тонкая граница
+INSET = "#0B0E12"        # внутренние поля (метры, списки, дорожки ползунков)
+FG = "#EEF3F8"           # основной текст
+DIM = "#8D9AA8"          # вторичный текст
+MUTED = "#63707D"        # приглушённый текст
+ACCENT = "#66B7FF"       # выбор и фокус
+REC = "#FF6571"          # запись
+PLAY = "#4BD39A"         # воспроизведение
+WARN = "#EDBD60"         # ожидание сигнала
+WAVE = "#4FA98F"         # волноформа (приглушённый зелёно-бирюзовый)
+
+HOVER = "#2A333E"        # наведение обычной кнопки
+DOWN = "#151B22"         # нажатие
+
+# Сетка тактов в дорожках
+BAR_A = "#141920"        # такт чётный
+BAR_B = "#1E2530"        # такт нечётный (заметно светлее/темнее)
+BAR_LINE = "#2A333E"     # тонкая линия такта
+BLOCK_LINE = "#55636E"   # заметная линия блока
+WAVE_MISS = "#5C6874"    # блок без порога
 
 STATE_COLORS = {
     SlotState.EMPTY: DIM,
@@ -55,9 +73,24 @@ METER_WIDTH = 220
 WAVE_BINS = 180
 ROW_H = 64
 
-FONT = ("Segoe UI", 9)
-FONT_B = ("Segoe UI", 9, "bold")
-FONT_BIG = ("Segoe UI", 11, "bold")
+# Шрифт выбираем из установленных (Segoe UI Variable → Segoe UI → Inter)
+FONT_FAMILY = "Segoe UI"
+FONT = (FONT_FAMILY, 9)
+FONT_B = (FONT_FAMILY, 9, "bold")
+FONT_BIG = (FONT_FAMILY, 11, "bold")
+FONT_NUM = ("Consolas", 10, "bold")   # табличные цифры для показаний
+
+
+def _pick_font_family(root) -> str:
+    try:
+        import tkinter.font as tkfont
+        fams = {f.lower() for f in tkfont.families(root)}
+        for cand in ("Segoe UI Variable", "Segoe UI", "Inter"):
+            if cand.lower() in fams:
+                return cand
+    except Exception:
+        pass
+    return "Segoe UI"
 
 
 class LoopRow:
@@ -71,29 +104,41 @@ class LoopRow:
 
         self.num_btn = tk.Button(
             self.frame, text=f"Луп {index + 1}", width=10,
-            bg=PANEL, fg=FG, activebackground="#3a3a3c", activeforeground=FG,
-            font=("Segoe UI", 11, "bold"),
+            bg=CTRL, fg=FG, activebackground=HOVER, activeforeground=FG,
+            relief="flat", bd=0, highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=ACCENT,
+            font=FONT_BIG,
             command=lambda n=index: app.click_slot(n),
         )
         self.num_btn.pack(side="left", fill="y")
 
         holder = tk.Frame(self.frame, bg=BG)
         holder.pack(side="left", fill="x", expand=True)
-        self.canvas = tk.Canvas(holder, height=ROW_H, bg="#111", highlightthickness=1,
-                                highlightbackground=PANEL, xscrollincrement=1)
+        self.canvas = tk.Canvas(holder, height=ROW_H, bg=BAR_A, highlightthickness=1,
+                                highlightbackground=BORDER)
         self.canvas.pack(fill="x", expand=True)
-        self.scroll = tk.Scrollbar(holder, orient="horizontal", command=self.canvas.xview)
-        self.scroll.pack(fill="x")
-        self.canvas.configure(xscrollcommand=self.scroll.set)
 
         self.canvas.bind("<Button-1>", lambda _e, n=index: app.select_slot(n))
+        self._last_w = 0
+        self.canvas.bind("<Configure>", self._on_resize)
 
         self._sig = ""
         self._wave_gen = -1
         self._playhead = None
 
+    def _on_resize(self, event) -> None:
+        # Ширина окна изменилась — перерисуем сетку под новую ширину.
+        if abs(event.width - self._last_w) > 2:
+            self._last_w = event.width
+            self.force_redraw()
+
+    def _cw(self) -> int:
+        """Фактическая ширина дорожки — вся волноформа всегда в неё вмещается."""
+        w = self.canvas.winfo_width()
+        return w if w > 2 else max(300, self.app.viewport_width())
+
     def update_row(self, snap_info: dict, selected: bool, params_sig: str) -> None:
-        border = ACCENT if selected else PANEL
+        border = ACCENT if selected else BORDER
         self.canvas.configure(highlightbackground=border)
 
         # Кнопка лупа: серый — не выбран; зелёный — выбран; жёлтый — приглушён;
@@ -101,26 +146,25 @@ class LoopRow:
         muted = snap_info.get("muted", False)
         if selected and (snap_info.get("recording") or snap_info.get("armed_here")
                          or snap_info.get("waiting")):
-            self.num_btn.configure(bg=REC, fg="white",
-                                   activebackground="#ff6961", activeforeground="white")
+            self.num_btn.configure(bg=REC, fg="#0B0E12",
+                                   activebackground="#FF8A92", activeforeground="#0B0E12")
         elif muted:
-            self.num_btn.configure(bg=WARN, fg="#111",
-                                   activebackground="#ffe14d", activeforeground="#111")
+            self.num_btn.configure(bg=WARN, fg="#0B0E12",
+                                   activebackground="#F2CC7E", activeforeground="#0B0E12")
         elif selected:
-            self.num_btn.configure(bg=PLAY, fg="#111",
-                                   activebackground="#5ee07f", activeforeground="#111")
+            self.num_btn.configure(bg=PLAY, fg="#0B0E12",
+                                   activebackground="#6BE0AE", activeforeground="#0B0E12")
         else:
-            self.num_btn.configure(bg=PANEL, fg=FG,
-                                   activebackground="#3a3a3c", activeforeground=FG)
+            self.num_btn.configure(bg=CTRL, fg=FG,
+                                   activebackground=HOVER, activeforeground=FG)
 
         redraw_full = params_sig != self._sig
         wave_changed = snap_info.get("wave_gen", self._wave_gen) != self._wave_gen
         if redraw_full or wave_changed:
             self._draw(params_sig, snap_info, wave_changed, redraw_full)
-        # Позиция курсора воспроизведения — ПО ШИРИНЕ СЕТКИ (с учётом зума)
+        # Позиция курсора воспроизведения — по всей ширине дорожки
         frac = snap_info.get("pos", 0.0)
-        content_w = self.app.content_width()
-        x = frac * content_w
+        x = frac * self._cw()
         if self._playhead is None:
             self._playhead = self.canvas.create_line(x, 0, x, ROW_H, fill=WARN, width=2)
         else:
@@ -128,40 +172,38 @@ class LoopRow:
 
     def _draw(self, params_sig: str, snap_info: dict, wave_changed: bool, full: bool) -> None:
         app = self.app
-        content_w = app.content_width()
-        self.canvas.configure(scrollregion=(0, 0, content_w, ROW_H),
-                              width=max(300, app.viewport_width()))
+        w = self._cw()
         if full:
             self.canvas.delete("all")
             self._playhead = None
             self._sig = params_sig
             total_bars = max(1, app.engine.bars_per_block * app.engine.num_blocks)
-            bar_w = content_w / total_bars
-            # Заливка блоков чередованием
-            for b in range(app.engine.num_blocks):
-                x0 = b * app.engine.bars_per_block * bar_w
-                x1 = x0 + app.engine.bars_per_block * bar_w
-                if b % 2 == 1:
-                    self.canvas.create_rectangle(x0, 0, x1, ROW_H, fill="#161618", width=0)
-            # Линии тактов
+            bar_w = w / total_bars
+            # Такты цветом: каждый следующий — чередованием светлее/темнее
+            for i in range(total_bars):
+                x0 = i * bar_w
+                self.canvas.create_rectangle(
+                    x0, 0, x0 + bar_w + 1, ROW_H,
+                    fill=BAR_A if i % 2 == 0 else BAR_B, width=0)
+            # Линии тактов (тонкие) и блоков (заметные полоски)
             for i in range(total_bars + 1):
                 x = i * bar_w
                 is_block = (i % app.engine.bars_per_block) == 0
                 self.canvas.create_line(x, 0, x, ROW_H,
-                                        fill="#4a4a4c" if is_block else "#2c2c2e",
-                                        width=2 if is_block else 1)
-        # Волноформа: зелёный — порог был достаточным, серый — нет.
+                                        fill=BLOCK_LINE if is_block else BAR_LINE,
+                                        width=3 if is_block else 1)
+        # Волноформа: зелёно-бирюзовый — порог был достаточным, серый — нет.
         self.canvas.delete("wave")
         wave, hits = app.engine.get_wave(self.index)
         self._wave_gen = snap_info.get("wave_gen", -1)
         half = ROW_H / 2 - 4
         bins = len(wave)
-        bw = content_w / bins
+        bw = w / bins
         for i, v in enumerate(wave):
             h = min(1.0, float(v)) * half
             if h < 0.5:
                 continue
-            color = "#30d158" if (i < len(hits) and hits[i]) else "#8e8e93"
+            color = WAVE if (i < len(hits) and hits[i]) else WAVE_MISS
             x0 = i * bw
             self.canvas.create_rectangle(
                 x0, half - h + 4, x0 + max(bw, 1.0), half + h + 4,
@@ -175,6 +217,11 @@ class LoopRow:
 class App(tk.Tk):
     def __init__(self, cfg: dict, engine, midi, on_close=None):
         super().__init__()
+        global FONT_FAMILY, FONT, FONT_B, FONT_BIG
+        FONT_FAMILY = _pick_font_family(self)
+        FONT = (FONT_FAMILY, 9)
+        FONT_B = (FONT_FAMILY, 9, "bold")
+        FONT_BIG = (FONT_FAMILY, 11, "bold")
         self.cfg = cfg
         self.engine = engine
         self.midi = midi
@@ -220,21 +267,22 @@ class App(tk.Tk):
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("TCombobox", fieldbackground="#111", background=PANEL,
-                        foreground=FG, arrowcolor=FG,
-                        selectbackground="#111", selectforeground=FG)
+        style.configure("TCombobox", fieldbackground=INSET, background=CTRL,
+                        foreground=FG, arrowcolor=FG, bordercolor=BORDER,
+                        selectbackground=INSET, selectforeground=FG,
+                        lightcolor=BORDER, darkcolor=BORDER)
         style.map("TCombobox",
-                  fieldbackground=[("readonly", "#111")],
+                  fieldbackground=[("readonly", INSET)],
                   foreground=[("readonly", FG)],
-                  selectbackground=[("readonly", "#111")],
+                  selectbackground=[("readonly", INSET)],
                   selectforeground=[("readonly", FG)],
                   arrowcolor=[("readonly", FG)])
         style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=PANEL, foreground=FG,
-                        padding=(16, 7), font=("Segoe UI", 10, "bold"))
+        style.configure("TNotebook.Tab", background=CTRL, foreground=DIM,
+                        padding=(16, 7), font=(FONT_FAMILY, 10, "bold"))
         style.map("TNotebook.Tab",
                   background=[("selected", ACCENT)],
-                  foreground=[("selected", "white")])
+                  foreground=[("selected", "#0B0E12")])
 
     def _label(self, parent, text, **kw):
         kw.setdefault("bg", BG)
@@ -248,26 +296,77 @@ class App(tk.Tk):
         return tk.Label(parent, text=text, **kw)
 
     def _hint(self, parent, text):
-        """Подсказка мелким серым шрифтом — отдельной строкой, не в ряду."""
+        """Подсказка мелким шрифтом — отдельной строкой, не в ряду."""
         lbl = tk.Label(parent, text=text, bg=PANEL, fg=DIM,
-                       font=("Segoe UI", 8), justify="left", anchor="w",
+                       font=(FONT_FAMILY, 8), justify="left", anchor="w",
                        wraplength=940)
         lbl.pack(fill="x", pady=(6, 0))
         return lbl
 
     def _panel(self, parent, title):
-        frame = tk.Frame(parent, bg=PANEL, pady=10, padx=12)
+        frame = tk.Frame(parent, bg=PANEL, pady=10, padx=12,
+                         highlightthickness=1, highlightbackground=BORDER)
         frame.pack(fill="x", padx=12, pady=5)
-        self._label(frame, title, font=("Segoe UI", 9, "bold"), bg=PANEL).pack(anchor="w")
+        self._label(frame, title, font=FONT_B, bg=PANEL).pack(anchor="w")
         return frame
 
+    def _button(self, parent, text, command, main=False, rec=False, play=False,
+                width=None, height=1, font=None, bg=None, fg=None, **kw):
+        """Кнопка в общем стиле: тёмная поверхность, тонкая граница, голубой фокус."""
+        kw.setdefault("relief", "flat")
+        kw.setdefault("bd", 0)
+        kw.setdefault("highlightthickness", 1)
+        kw.setdefault("highlightbackground", BORDER)
+        kw.setdefault("highlightcolor", ACCENT)
+        kw.setdefault("font", font or (FONT_BIG if main else FONT))
+        kw.setdefault("activebackground", HOVER)
+        kw.setdefault("activeforeground", FG)
+        if rec:
+            kw.setdefault("highlightbackground", REC)
+        if play:
+            kw.setdefault("highlightbackground", PLAY)
+        if bg is not None:
+            kw["bg"] = bg
+        else:
+            kw.setdefault("bg", CTRL)
+        if fg is not None:
+            kw["fg"] = fg
+        else:
+            kw.setdefault("fg", FG)
+        if width is not None:
+            kw["width"] = width
+        kw["height"] = height
+        kw["command"] = command
+        return tk.Button(parent, text=text, **kw)
+
+    def _scale(self, parent, var, from_, to, resolution, command, length=130):
+        """Ползунок с тонкой дорожкой и значением в процентах рядом."""
+        wrap = tk.Frame(parent, bg=parent["bg"] if isinstance(parent, tk.Widget) else PANEL)
+        wrap_bg = wrap["bg"]
+
+        def _cmd(v):
+            try:
+                val_lbl.config(text=f"{float(v) * 100:.0f}%")
+            except Exception:
+                pass
+            command(v)
+
+        sc = tk.Scale(wrap, from_=from_, to=to, resolution=resolution,
+                      orient="horizontal", length=length, variable=var,
+                      bg=wrap_bg, fg=FG, troughcolor=INSET, bd=0,
+                      highlightthickness=1, highlightbackground=BORDER,
+                      activebackground=ACCENT, sliderrelief="flat",
+                      showvalue=False, command=_cmd)
+        sc.pack(side="left")
+        val_lbl = tk.Label(wrap, text="0%", width=5, bg=wrap_bg, fg=DIM,
+                           font=FONT, anchor="w")
+        val_lbl.pack(side="left", padx=(6, 0))
+        _cmd(var.get())
+        return wrap
+
     def content_width(self) -> int:
-        base = 700
-        try:
-            zoom = float(self.zoom_var.get())
-        except Exception:
-            zoom = 100.0
-        return int(base * zoom / 100.0)
+        # Вся сетка цикла всегда вмещается в ширину окна — зума больше нет.
+        return self.viewport_width()
 
     def viewport_width(self) -> int:
         return max(300, self.winfo_width() - 180)
@@ -279,37 +378,27 @@ class App(tk.Tk):
         # --- Индикация звука ---
         row = tk.Frame(self.tab_loops, bg=BG, pady=8)
         row.pack(fill="x", padx=12)
-        self._label(row, "Вход:", width=6, anchor="w", font=FONT_B).pack(side="left")
-        self.in_meter = tk.Canvas(row, width=METER_WIDTH, height=14, bg="#111",
-                                  highlightthickness=0)
+        self._label(row, "ВХОД", width=6, anchor="w", font=FONT_B, fg=DIM).pack(side="left")
+        self.in_meter = tk.Canvas(row, width=METER_WIDTH, height=14, bg=INSET,
+                                  highlightthickness=1, highlightbackground=BORDER)
         self.in_meter.pack(side="left", padx=(4, 16))
-        self._label(row, "Выход:", width=6, anchor="w", font=FONT_B).pack(side="left")
-        self.out_meter = tk.Canvas(row, width=METER_WIDTH, height=14, bg="#111",
-                                   highlightthickness=0)
+        self._label(row, "ВЫХОД", width=6, anchor="w", font=FONT_B, fg=DIM).pack(side="left")
+        self.out_meter = tk.Canvas(row, width=METER_WIDTH, height=14, bg=INSET,
+                                   highlightthickness=1, highlightbackground=BORDER)
         self.out_meter.pack(side="left", padx=4)
         self.status_label = self._label(row, "● Не подключено", fg=DIM,
-                                        font=("Segoe UI", 10, "bold"))
+                                        font=(FONT_FAMILY, 10, "bold"))
         self.status_label.pack(side="right")
 
-        # --- Метроном + драм-машина ---
+        # --- Метроном / Драм-машина ---
         m = self._panel(self.tab_loops, "Метроном / Драм-машина")
         mtop = tk.Frame(m, bg=PANEL)
         mtop.pack(fill="x")
         self.metro_var = tk.BooleanVar(value=bool(self.cfg.get("metronome_on", False)))
         tk.Checkbutton(mtop, text="Метроном вкл.", variable=self.metro_var, bg=PANEL, fg=FG,
-                       activebackground=PANEL, activeforeground=FG, selectcolor=PANEL,
+                       activebackground=PANEL, activeforeground=FG, selectcolor=CTRL,
                        highlightthickness=0, font=FONT,
                        command=self._apply_loops_params).pack(side="left")
-
-        # Кнопка «Драм-машина» — рядом с метрономом; спойлер снизу
-        self.drum_var = tk.BooleanVar(value=bool(self.cfg.get("drum_on", False)))
-        self.drum_btn = tk.Button(
-            mtop, text="Драм-машина", width=13,
-            bg=PANEL, fg=FG, activebackground="#3a3a3c", activeforeground=FG,
-            font=FONT_B, command=self._toggle_drum,
-        )
-        self.drum_btn.pack(side="left", padx=(16, 0))
-        self.metro_panel = m
 
         self._label(mtop, "Звук щелчка:", bg=PANEL).pack(side="left", padx=(18, 0))
         self.metro_sound_var = tk.StringVar(value=str(self.cfg.get("metro_sound", "wood")))
@@ -319,48 +408,74 @@ class App(tk.Tk):
 
         self._label(mtop, "Громкость:", bg=PANEL).pack(side="left", padx=(12, 0))
         self.metro_gain_var = tk.DoubleVar(value=float(self.cfg.get("metro_gain", 0.5)))
-        tk.Scale(mtop, from_=0.0, to=1.0, resolution=0.05, orient="horizontal", length=110,
-                 variable=self.metro_gain_var, bg=PANEL, fg=FG, troughcolor="#111",
-                 highlightthickness=0,
-                 command=lambda _v: self._apply_loops_params()).pack(side="left")
-        self._hint(m, "Темп и размер — общие с циклом (см. «Запись»). "
-                      "Щелчки только при проигрывании, в лупы не пишутся.")
+        self._scale(mtop, self.metro_gain_var, 0.0, 1.0, 0.05,
+                    lambda _v: self._apply_loops_params(), length=110).pack(side="left")
 
-        # --- Спойлер драм-машины: стиль + предпрослушивание ---
-        d = self._panel(self.tab_loops, "Драм-машина (стили)")
-        dtop = tk.Frame(d, bg=PANEL)
+        # Кнопка «Драм-машина» — под метрономом: шеврон раскрывает настройки,
+        # тумблер рядом включает/выключает барабаны.
+        dbot = tk.Frame(m, bg=PANEL)
+        dbot.pack(fill="x", pady=(6, 0))
+        self._drum_open = True
+        self.drum_btn = tk.Button(
+            dbot, text="▾  Драм-машина", width=15,
+            bg=PANEL2, fg=FG, activebackground=HOVER, activeforeground=FG,
+            relief="flat", bd=0, highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=ACCENT,
+            font=FONT_B, command=self._toggle_drum_panel,
+        )
+        self.drum_btn.pack(side="left")
+        self.drum_var = tk.BooleanVar(value=bool(self.cfg.get("drum_on", False)))
+        tk.Checkbutton(dbot, text="Драм вкл.", variable=self.drum_var, bg=PANEL, fg=FG,
+                       activebackground=PANEL, activeforeground=FG, selectcolor=CTRL,
+                       highlightthickness=0, font=FONT,
+                       command=self._on_drum_check).pack(side="left", padx=(12, 0))
+        self.metro_panel = m
+
+        # Панель настроек драм-машины (раскрывается шевроном)
+        self.drum_panel = tk.Frame(m, bg=PANEL2, pady=8, padx=10,
+                                   highlightthickness=1, highlightbackground=BORDER)
+        dtop = tk.Frame(self.drum_panel, bg=PANEL2)
         dtop.pack(fill="x")
         self.drum_style_var = tk.StringVar(value=str(self.cfg.get("drum_style", "Поп")))
-        self._label(dtop, "Стиль:", bg=PANEL).pack(side="left")
+        self._label(dtop, "Стиль:", bg=PANEL2).pack(side="left")
         ttk.Combobox(dtop, textvariable=self.drum_style_var, width=12, state="readonly",
                      values=STYLE_NAMES).pack(side="left", padx=4)
         self.drum_style_var.trace_add("write", lambda *_: self._apply_loops_params())
 
         self.drum_prev_btn = tk.Button(
             dtop, text="▶  Предпрослушивание", width=19,
-            bg=PANEL, fg=FG, activebackground="#3a3a3c", activeforeground=FG,
+            bg=CTRL, fg=FG, activebackground=HOVER, activeforeground=FG,
+            relief="flat", bd=0, highlightthickness=1,
+            highlightbackground=BORDER, highlightcolor=ACCENT, font=FONT,
             command=self._toggle_drum_preview,
         )
         self.drum_prev_btn.pack(side="left", padx=(18, 0))
 
-        self._label(dtop, "Громкость:", bg=PANEL).pack(side="left", padx=(18, 0))
+        self._label(dtop, "Громкость:", bg=PANEL2).pack(side="left", padx=(18, 0))
         self.drum_gain_var = tk.DoubleVar(value=float(self.cfg.get("drum_gain", 0.7)))
-        tk.Scale(dtop, from_=0.0, to=1.5, resolution=0.05, orient="horizontal", length=110,
-                 variable=self.drum_gain_var, bg=PANEL, fg=FG, troughcolor="#111",
-                 highlightthickness=0,
-                 command=lambda _v: self._apply_loops_params()).pack(side="left")
-        self._hint(d, "Играет вместе с транспортом: крэш — на первом такте цикла, "
-                      "брейк — на последнем. В лупы не пишется.")
-        self.drum_panel = d
+        self._scale(dtop, self.drum_gain_var, 0.0, 1.5, 0.05,
+                    lambda _v: self._apply_loops_params(), length=110).pack(side="left")
+        self._hint_drum = tk.Label(
+            self.drum_panel,
+            text="Играет вместе с транспортом: крэш — на первом такте цикла, "
+                 "брейк — на последнем. В лупы не пишется.",
+            bg=PANEL2, fg=DIM, font=(FONT_FAMILY, 8), justify="left", anchor="w",
+            wraplength=900)
+        self._hint_drum.pack(fill="x", pady=(6, 0))
+        self._sync_drum_ui()
+        self._hint(m, "Темп и размер — общие с циклом (см. «Запись»). "
+                      "Щелчки только при проигрывании, в лупы не пишутся.")
 
         # --- Темп / такты / блоки (ОБЩИЙ темп для метронома и цикла) ---
         b = self._panel(self.tab_loops, "Запись: темп, такты и блоки (общий темп)")
         r1 = tk.Frame(b, bg=PANEL)
         r1.pack(fill="x", pady=(2, 0))
-        self._label(r1, "Темп:", bg=PANEL, width=13, anchor="w").pack(side="left")
+        self._label(r1, "ТЕМП", bg=PANEL, width=13, anchor="w", fg=DIM).pack(side="left")
         self.bpm_var = tk.StringVar(value=str(int(float(self.cfg.get("bpm", 120)))))
         tk.Spinbox(r1, from_=30, to=300, width=5, textvariable=self.bpm_var,
-                   bg="#111", fg=FG, buttonbackground=PANEL, font=FONT,
+                   bg=INSET, fg=FG, buttonbackground=CTRL, font=FONT_NUM,
+                   relief="flat", bd=0, highlightthickness=1,
+                   highlightbackground=BORDER, highlightcolor=ACCENT,
                    command=self._apply_loops_params).pack(side="left", padx=4)
         self.bpm_var.trace_add("write", lambda *_: self._apply_loops_params())
         self._label(r1, "BPM", bg=PANEL, width=4, anchor="w").pack(side="left")
@@ -376,19 +491,23 @@ class App(tk.Tk):
         r2.pack(fill="x", pady=(8, 0))
         self._label(r2, "Тактов в блоке:", bg=PANEL, width=13, anchor="w").pack(side="left")
         self.bars_var = tk.StringVar(value=str(self.cfg.get("bars_per_block", 4)))
-        tk.Spinbox(r2, from_=1, to=64, width=5, textvariable=self.bars_var, bg="#111",
-                   fg=FG, buttonbackground=PANEL, font=FONT,
+        tk.Spinbox(r2, from_=1, to=64, width=5, textvariable=self.bars_var,
+                   bg=INSET, fg=FG, buttonbackground=CTRL, font=FONT_NUM,
+                   relief="flat", bd=0, highlightthickness=1,
+                   highlightbackground=BORDER, highlightcolor=ACCENT,
                    command=self._apply_loops_params).pack(side="left", padx=4)
         self.bars_var.trace_add("write", lambda *_: self._apply_loops_params())
 
         self._label(r2, "Блоков:", bg=PANEL).pack(side="left", padx=(18, 0))
         self.blocks_var = tk.StringVar(value=str(self.cfg.get("num_blocks", 2)))
-        tk.Spinbox(r2, from_=1, to=64, width=5, textvariable=self.blocks_var, bg="#111",
-                   fg=FG, buttonbackground=PANEL, font=FONT,
+        tk.Spinbox(r2, from_=1, to=64, width=5, textvariable=self.blocks_var,
+                   bg=INSET, fg=FG, buttonbackground=CTRL, font=FONT_NUM,
+                   relief="flat", bd=0, highlightthickness=1,
+                   highlightbackground=BORDER, highlightcolor=ACCENT,
                    command=self._apply_loops_params).pack(side="left", padx=4)
         self.blocks_var.trace_add("write", lambda *_: self._apply_loops_params())
 
-        self.total_label = self._label(r2, "", bg=PANEL, fg=WARN, font=FONT_B)
+        self.total_label = self._label(r2, "", bg=PANEL, fg=WARN, font=FONT_NUM)
         self.total_label.pack(side="left", padx=(24, 0))
 
         # --- Режим записи / порог ---
@@ -398,36 +517,30 @@ class App(tk.Tk):
         self.autostart_var = tk.StringVar(value="auto" if self.cfg.get("autostart") else "manual")
         tk.Radiobutton(atop, text="Вручную (все блоки)", variable=self.autostart_var,
                        value="manual", bg=PANEL, fg=FG, activebackground=PANEL,
-                       activeforeground=FG, selectcolor=PANEL, highlightthickness=0,
+                       activeforeground=FG, selectcolor=CTRL, highlightthickness=0,
                        font=FONT, command=self._apply_loops_params).pack(side="left")
         tk.Radiobutton(atop, text="Авто по звуку (блоки по порогу)", variable=self.autostart_var,
                        value="auto", bg=PANEL, fg=FG, activebackground=PANEL,
-                       activeforeground=FG, selectcolor=PANEL, highlightthickness=0,
+                       activeforeground=FG, selectcolor=CTRL, highlightthickness=0,
                        font=FONT, command=self._apply_loops_params).pack(side="left", padx=(12, 0))
 
         self._label(atop, "Порог:", bg=PANEL).pack(side="left", padx=(24, 0))
         self.thr_var = tk.DoubleVar(value=float(self.cfg.get("threshold", 0.05)))
-        tk.Scale(atop, from_=0.01, to=1.0, resolution=0.01, orient="horizontal", length=150,
-                 variable=self.thr_var, bg=PANEL, fg=FG, troughcolor="#111",
-                 highlightthickness=0,
-                 command=lambda _v: self._apply_loops_params()).pack(side="left")
+        self._scale(atop, self.thr_var, 0.01, 1.0, 0.01,
+                    lambda _v: self._apply_loops_params(), length=150).pack(side="left")
         self._hint(a, "Блок с порогом — весь зелёный и пишется целиком; без порога — "
                       "серый, в луп не пишется. «Авто»: если Play не запущен, «Запись» "
                       "ждёт звук — проигрывание и запись стартуют с момента превышения порога.")
 
-        # --- Строки лупов + зум ---
+        # --- Строки лупов (ширина подстраивается под окно) ---
         loops_frame = tk.Frame(self.tab_loops, bg=BG)
         loops_frame.pack(fill="both", expand=True, padx=12, pady=(8, 2))
         head = tk.Frame(loops_frame, bg=BG)
         head.pack(fill="x")
         self._label(head, "Лупы (клик — выбор; повторный клик по выбранному — вкл/выкл звук):",
                     font=FONT_B).pack(side="left")
-        self._label(head, "Масштаб:").pack(side="left", padx=(20, 0))
-        self.zoom_var = tk.DoubleVar(value=float(self.cfg.get("zoom", 100)))
-        tk.Scale(head, from_=50, to=400, resolution=10, orient="horizontal", length=220,
-                 variable=self.zoom_var, bg=BG, fg=FG, troughcolor="#111",
-                 highlightthickness=0,
-                 command=lambda _v: self._zoom_changed()).pack(side="left")
+        self._label(head, "Все блоки всегда вмещаются в ширину окна",
+                    fg=MUTED, font=(FONT_FAMILY, 8)).pack(side="right")
 
         self.rows = []
         for i in range(self.engine.n_slots):
@@ -446,39 +559,33 @@ class App(tk.Tk):
             "Горячие клавиши: R — запись/дубль, Space — старт/стоп, U — undo, "
             "C — очистить, S — стоп, M — метроном, 1–4 — выбор лупа, "
             "[ ] — луп назад/вперёд.",
-            fg=DIM, wraplength=980, justify="left", font=("Segoe UI", 8),
+            fg=MUTED, wraplength=980, justify="left", font=(FONT_FAMILY, 8),
         ).pack(anchor="w")
 
     def _build_transport(self) -> None:
         frame = tk.Frame(self.tab_loops, bg=BG, pady=6)
         frame.pack(fill="x", padx=12)
 
-        def btn(text, bg, fg, width, font, command, active=None):
-            tk.Button(
-                frame, text=text, width=width, height=2, bg=bg, fg=fg,
-                activebackground=active or "#3a3a3c", activeforeground=fg,
-                font=font, command=command,
-            ).pack(side="left", padx=(0, 8))
+        self._rec_btn = self._button(
+            frame, "●  Запись / Дубль", lambda: self.do_action("toggle_rec"),
+            main=True, rec=True, width=18, height=2)
+        self._rec_btn.pack(side="left", padx=(0, 8))
 
-        btn("●  Запись / Дубль", REC, "white", 18, FONT_BIG,
-            lambda: self.do_action("toggle_rec"), "#ff6961")
-        btn("▶  Старт / Стоп", PLAY, "#111", 16, FONT_BIG,
-            lambda: self.do_action("toggle_play"), "#5ee07f")
-        btn("■  Стоп", PANEL, FG, 11, FONT,
-            lambda: self.do_action("stop_all"))
-        btn("↩  Undo", PANEL, FG, 11, FONT,
-            lambda: self.do_action("undo"))
-        btn("✕  Очистить", PANEL, FG, 11, FONT,
-            lambda: self.do_action("clear"))
-        btn("💾 Экспорт WAV", PANEL, FG, 13, FONT,
-            self.export_wav)
+        self._play_btn = self._button(
+            frame, "▶  Старт / Стоп", lambda: self.do_action("toggle_play"),
+            main=True, play=True, width=16, height=2)
+        self._play_btn.pack(side="left", padx=(0, 8))
+
+        self._button(frame, "■  Стоп", lambda: self.do_action("stop_all"),
+                     width=11, height=2).pack(side="left", padx=(0, 8))
+        self._button(frame, "↺  Undo", lambda: self.do_action("undo"),
+                     width=11, height=2).pack(side="left", padx=(0, 8))
+        self._button(frame, "✕  Очистить", lambda: self.do_action("clear"),
+                     width=11, height=2).pack(side="left", padx=(0, 8))
+        self._button(frame, "⇩  Экспорт WAV", self.export_wav,
+                     width=13, height=2).pack(side="left", padx=(0, 8))
 
         self._sync_drum_ui()
-
-    def _zoom_changed(self) -> None:
-        self.cfg["zoom"] = float(self.zoom_var.get())
-        for r in self.rows:
-            r.force_redraw()
 
     def select_slot(self, n: int) -> None:
         self.engine.post("select_slot", n)
@@ -524,9 +631,10 @@ class App(tk.Tk):
         self.instr_group_var.trace_add("write", lambda *_: self._fill_instr_list())
 
         self._label(left, "Инструмент:", bg=PANEL).pack(anchor="w")
-        self.instr_list = tk.Listbox(left, height=10, width=28, bg="#111", fg=FG,
-                                     selectbackground=ACCENT, selectforeground="white",
-                                     highlightthickness=0, font=FONT,
+        self.instr_list = tk.Listbox(left, height=10, width=28, bg=INSET, fg=FG,
+                                     selectbackground=ACCENT, selectforeground="#0B0E12",
+                                     highlightthickness=1, highlightbackground=BORDER,
+                                     font=FONT, relief="flat", bd=0,
                                      exportselection=False, activestyle="none")
         self.instr_list.pack(anchor="w", pady=(2, 0))
         self.instr_list.bind("<<ListboxSelect>>", self._instr_selected)
@@ -534,15 +642,11 @@ class App(tk.Tk):
 
         right = tk.Frame(irow, bg=PANEL)
         right.pack(side="left", anchor="n", padx=(24, 0))
-        tk.Button(right, text="▶  Демо", width=14, bg=PANEL, fg=FG,
-                  activebackground="#3a3a3c", activeforeground=FG, font=FONT_B,
-                  command=self._demo).pack(anchor="w")
+        self._button(right, "▶  Демо", self._demo, width=14).pack(anchor="w")
         self._label(right, "Громкость инструмента:", bg=PANEL).pack(anchor="w", pady=(12, 0))
         self.instr_gain_var = tk.DoubleVar(value=float(self.cfg.get("instr_gain", 1.0)))
-        tk.Scale(right, from_=0.0, to=1.5, resolution=0.05, orient="horizontal",
-                 length=150, variable=self.instr_gain_var, bg=PANEL, fg=FG,
-                 troughcolor="#111", highlightthickness=0,
-                 command=lambda _v: self._apply_instr_gain()).pack(anchor="w")
+        self._scale(right, self.instr_gain_var, 0.0, 1.5, 0.05,
+                    lambda _v: self._apply_instr_gain(), length=150).pack(anchor="w")
 
         if s and s.ok:
             idx = int(self.cfg.get("instr_index", 0))
@@ -666,15 +770,14 @@ class App(tk.Tk):
         tk.Checkbutton(
             r2, text="Экскл. WASAPI (низкая задержка)", variable=self.excl_var,
             bg=PANEL, fg=FG, activebackground=PANEL, activeforeground=FG,
-            selectcolor=PANEL, highlightthickness=0, font=FONT,
+            selectcolor=CTRL, highlightthickness=0, font=FONT,
         ).pack(side="left")
 
-        tk.Button(r2, text="Применить", bg=ACCENT, fg="white", activebackground="#3498db",
-                  activeforeground="white", font=FONT_B, width=12,
-                  command=self.apply_devices).pack(side="left", padx=(24, 8))
-        tk.Button(r2, text="Обновить списки", bg=PANEL, fg=FG, activebackground="#3a3a3c",
-                  activeforeground=FG, font=FONT, width=14,
-                  command=self._refresh_devices).pack(side="left")
+        self._button(r2, "Применить", self.apply_devices, width=12, bg=ACCENT,
+                     fg="#0B0E12", activebackground="#8CC8FF",
+                     activeforeground="#0B0E12", font=FONT_B).pack(side="left", padx=(24, 8))
+        self._button(r2, "Обновить списки", self._refresh_devices,
+                     width=14).pack(side="left")
 
         self.in_map = {}
         self.out_map = {}
@@ -683,17 +786,15 @@ class App(tk.Tk):
         g = self._panel(self.tab_settings, "Громкости")
         self._label(g, "Мониторинг (вход в наушниках):", bg=PANEL).pack(side="left")
         self.mon_var = tk.DoubleVar(value=float(self.cfg.get("monitor_gain", 1.0)))
-        tk.Scale(g, from_=0.0, to=1.0, resolution=0.05, orient="horizontal", length=130,
-                 variable=self.mon_var, bg=PANEL, fg=FG, troughcolor="#111",
-                 highlightthickness=0,
-                 command=lambda _v: self.engine.set_gains(monitor=float(_v))).pack(side="left", padx=(4, 24))
+        self._scale(g, self.mon_var, 0.0, 1.0, 0.05,
+                    lambda _v: self.engine.set_gains(monitor=float(_v)),
+                    length=130).pack(side="left", padx=(4, 24))
 
         self._label(g, "Громкость лупов:", bg=PANEL).pack(side="left")
         self.mst_var = tk.DoubleVar(value=float(self.cfg.get("master_gain", 1.0)))
-        tk.Scale(g, from_=0.0, to=1.2, resolution=0.05, orient="horizontal", length=130,
-                 variable=self.mst_var, bg=PANEL, fg=FG, troughcolor="#111",
-                 highlightthickness=0,
-                 command=lambda _v: self.engine.set_gains(master=float(_v))).pack(side="left", padx=4)
+        self._scale(g, self.mst_var, 0.0, 1.2, 0.05,
+                    lambda _v: self.engine.set_gains(master=float(_v)),
+                    length=130).pack(side="left", padx=4)
 
     def _build_mapping(self) -> None:
         frame = tk.Frame(self.tab_midi, bg=BG, pady=6)
@@ -710,23 +811,23 @@ class App(tk.Tk):
             cell.grid(row=r, column=c, sticky="w", padx=(0, 28), pady=2)
             tk.Label(cell, text=label, bg=BG, fg=FG, width=26, anchor="w",
                      font=FONT).pack(side="left")
-            val = tk.Label(cell, text="—", bg=PANEL, fg=WARN, width=16, font=FONT)
+            val = tk.Label(cell, text="—", bg=INSET, fg=WARN, width=16, font=FONT,
+                           relief="flat", bd=0, highlightthickness=1,
+                           highlightbackground=BORDER)
             val.pack(side="left", padx=4)
-            btn = tk.Button(cell, text="Назначить", bg=ACCENT, fg="white", width=9,
-                            activebackground="#3498db", activeforeground="white",
-                            font=FONT,
-                            command=lambda a=action: self.start_learn(a))
+            btn = self._button(cell, "Назначить", lambda a=action: self.start_learn(a),
+                               width=9, bg=ACCENT, fg="#0B0E12",
+                               activebackground="#8CC8FF", activeforeground="#0B0E12")
             btn.pack(side="left", padx=2)
-            tk.Button(cell, text="×", bg=PANEL, fg=FG, width=2, font=FONT,
-                      activebackground="#3a3a3c", activeforeground=FG,
-                      command=lambda a=action: self.clear_binding(a)).pack(side="left", padx=(2, 0))
+            self._button(cell, "×", lambda a=action: self.clear_binding(a),
+                         width=2).pack(side="left", padx=(2, 0))
             self.map_widgets[action] = (val, btn)
 
     def _build_log(self) -> None:
         frame = tk.Frame(self.tab_settings, bg=BG)
         frame.pack(fill="both", expand=True, padx=10, pady=(4, 10))
         self._label(frame, "Журнал:", font=("Segoe UI", 9, "bold")).pack(anchor="w")
-        self.log_text = tk.Text(frame, height=8, bg="#111", fg=DIM, relief="flat",
+        self.log_text = tk.Text(frame, height=8, bg=INSET, fg=DIM, relief="flat",
                                 font=("Consolas", 9))
         self.log_text.pack(fill="both", expand=True)
         self.log(f"Готово. Версия {APP_VERSION} — при любых вопросах называйте её.")
@@ -787,24 +888,26 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     # Драм-машина
     # ------------------------------------------------------------------
-    def _toggle_drum(self) -> None:
-        self.drum_var.set(not self.drum_var.get())
-        self._apply_loops_params()
+    def _toggle_drum_panel(self) -> None:
+        """Шеврон «▸ Драм-машина» — показать/скрыть настройки (без вкл/выкл)."""
+        self._drum_open = not getattr(self, "_drum_open", True)
         self._sync_drum_ui()
+
+    def _on_drum_check(self) -> None:
+        """Тумблер «Драм вкл.» — включить/выключить барабаны."""
+        self._apply_loops_params()
         self.log("Драм-машина: " + ("включена (вступление с такта)" if self.drum_var.get()
                                     else "выключена"))
 
     def _sync_drum_ui(self) -> None:
-        """Вид кнопки и видимость спойлера — по состоянию драм-машины."""
-        on = bool(self.drum_var.get())
+        """Вид шеврона и видимость панели настроек драм-машины."""
+        open_ = bool(getattr(self, "_drum_open", True))
         self.drum_btn.configure(
-            bg=PLAY if on else PANEL,
-            fg="#111" if on else FG,
-            activebackground="#5ee07f" if on else "#3a3a3c",
-            activeforeground="#111" if on else FG,
+            text=("▾  " if open_ else "▸  ") + "Драм-машина",
+            bg=PANEL2 if open_ else CTRL,
         )
-        if on:
-            self.drum_panel.pack(fill="x", padx=10, after=self.metro_panel)
+        if open_:
+            self.drum_panel.pack(fill="x", pady=(8, 0))
         else:
             self.drum_panel.pack_forget()
 
@@ -819,8 +922,7 @@ class App(tk.Tk):
 
     def _loops_params_sig(self) -> str:
         return (f"{self.engine.bpm:.2f}|{self.engine.beats_per_bar}|"
-                f"{self.engine.bars_per_block}|{self.engine.num_blocks}|"
-                f"{float(self.zoom_var.get())}")
+                f"{self.engine.bars_per_block}|{self.engine.num_blocks}")
 
     # ------------------------------------------------------------------
     # Устройства
@@ -924,7 +1026,7 @@ class App(tk.Tk):
         self.learn_started = time.time()
         self.midi.start_learn(action)
         btn = self.map_widgets[action][1]
-        btn.config(text="Ждите...", bg=WARN, fg="#111")
+        btn.config(text="Ждите...", bg=WARN, fg="#0B0E12")
         self.log(f"MIDI-learn: нажмите кнопку на клавиатуре для «{ACTION_LABELS[action]}»")
 
     def clear_binding(self, action: str) -> None:
@@ -953,7 +1055,7 @@ class App(tk.Tk):
         for action, (val, btn) in self.map_widgets.items():
             keys = key_by_action.get(action, [])
             val.config(text=", ".join(keys) if keys else "—")
-            btn.config(text="Назначить", bg=ACCENT, fg="white")
+            btn.config(text="Назначить", bg=ACCENT, fg="#0B0E12")
 
     # ------------------------------------------------------------------
     # Прочее
@@ -1040,11 +1142,11 @@ class App(tk.Tk):
         if getattr(self, "_preview_shown", None) != preview:
             self._preview_shown = preview
             self.drum_prev_btn.config(
-                text="■ Стоп прослушивания" if preview else "▶ Предпрослушивание",
-                bg=REC if preview else PANEL,
-                fg="white" if preview else FG,
-                activebackground="#ff6961" if preview else "#3a3a3c",
-                activeforeground="white" if preview else FG,
+                text="■ Стоп прослушивания" if preview else "▶  Предпрослушивание",
+                bg=REC if preview else CTRL,
+                fg="#0B0E12" if preview else FG,
+                activebackground="#FF8A92" if preview else HOVER,
+                activeforeground="#0B0E12" if preview else FG,
             )
         snap = self.engine.snapshot()
         current = snap["current"]
@@ -1055,6 +1157,23 @@ class App(tk.Tk):
             info["wave_gen"] = self.engine.slots[i].wave_gen
             info["armed_here"] = bool(snap.get("armed")) and i == current
             self.rows[i].update_row(info, selected=(i == current), params_sig=sig)
+
+        # Главные кнопки: яркая заливка только в активном состоянии.
+        is_rec = any(inf.get("recording") or inf.get("armed_here") or inf.get("waiting")
+                     for inf in snap["slots"])
+        self._rec_btn.configure(
+            bg=REC if is_rec else CTRL,
+            fg="#0B0E12" if is_rec else FG,
+            activebackground="#FF8A92" if is_rec else HOVER,
+            activeforeground="#0B0E12" if is_rec else FG,
+        )
+        is_play = snap.get("transport") == "running"
+        self._play_btn.configure(
+            bg=PLAY if is_play else CTRL,
+            fg="#0B0E12" if is_play else FG,
+            activebackground="#6BE0AE" if is_play else HOVER,
+            activeforeground="#0B0E12" if is_play else FG,
+        )
 
         self._draw_meter(self.in_meter, snap["in_peak"], threshold=self.engine.threshold)
         self._draw_meter(self.out_meter, snap["out_peak"])
